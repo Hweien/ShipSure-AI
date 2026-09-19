@@ -1,0 +1,6 @@
+{
+  "name": "ShipSure AI",
+  "description": "Enterprise shipping document verification with multimodal Gemini Vision OCR for messy scans, multi-agent discrepancy detection, and operations hub.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
