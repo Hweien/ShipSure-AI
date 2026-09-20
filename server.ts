@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import { compareRevision } from "./server/services/revisionEngine";
 import { orchestrateCase } from "./server/services/orchestrator";
 import { JsonAuditRepository } from "./server/services/auditRepository";
+import { caseRepository } from "./server/services/caseRepository";
 
 dotenv.config();
 
@@ -225,7 +226,41 @@ app.get("/api/dataset/sample-submission", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// CS1 orchestration and revision workflow
+// Shipment case repository API
+// ---------------------------------------------------------------------------
+
+app.get("/api/cases", (_req, res) => {
+  return res.json(caseRepository.getAll());
+});
+
+app.get("/api/cases/:id", (req, res) => {
+  const shipmentCase = caseRepository.getById(req.params.id);
+
+  if (!shipmentCase) {
+    return res.status(404).json({
+      error: "Case not found",
+    });
+  }
+
+  return res.json(shipmentCase);
+});
+
+app.post("/api/cases", (req, res) => {
+  const shipmentCase = req.body;
+
+  if (!shipmentCase?.id) {
+    return res.status(400).json({
+      error: "ShipmentCase with id is required.",
+    });
+  }
+
+  const saved = caseRepository.save(shipmentCase);
+
+  return res.status(201).json(saved);
+});
+
+// ---------------------------------------------------------------------------
+// orchestration and revision workflow
 // ---------------------------------------------------------------------------
 app.post("/api/orchestration/run", async (req, res) => {
   try {
