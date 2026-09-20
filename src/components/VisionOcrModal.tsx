@@ -513,7 +513,7 @@ export const VisionOcrModal: React.FC<VisionOcrModalProps> = ({
                           </div>
 
                           <div className="text-sm font-semibold text-slate-900">
-                            {String(fieldData.value)}
+                            {String(fieldData.raw || fieldData.value)}
                           </div>
 
                           {fieldData.rawSnippet && (
