@@ -7,6 +7,7 @@ import fs from "fs/promises";
 import ExcelJS from "exceljs";
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
+import { compareDocuments } from "./src/services/comparison/comparisonService";
 
 dotenv.config();
 
@@ -677,6 +678,28 @@ Return ONLY valid JSON in this structure:
     return res.status(503).json({
       success: false,
       error: "Field extraction is temporarily unavailable",
+    });
+  }
+});
+
+// DS2 - Compare SI and BL
+app.post("/api/ds2/compare", async (req, res) => {
+  try {
+    const { siData, blData } = req.body;
+
+    const result = await compareDocuments(
+      siData,
+      blData
+    );
+
+    res.json(result);
+
+  } catch (error) {
+
+    console.error("Comparison error:", error);
+
+    res.status(500).json({
+      error: "Document comparison failed",
     });
   }
 });
