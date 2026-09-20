@@ -1,304 +1,364 @@
 import express from "express";
 import path from "path";
+import fs from "fs/promises";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { compareRevision } from "./server/services/revisionEngine";
+import { orchestrateCase } from "./server/services/orchestrator";
+import { JsonAuditRepository } from "./server/services/auditRepository";
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 15000);
 
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
 
-// Lazy-initialized Gemini AI client
-let aiClient: GoogleGenAI | null = null;
-function getGeminiClient(): GoogleGenAI | null {
-  if (!aiClient && process.env.GEMINI_API_KEY) {
-    aiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-  }
-  return aiClient;
-}
+const auditRepository = new JsonAuditRepository();
 
-// Server configuration state
-let serverConfig = {
-  dataSource: process.env.DATA_SOURCE || "DEMO",
+type DataSourceMode = "DEMO" | "LOCAL" | "DOCKER";
+
+let serverConfig: {
+  dataSource: DataSourceMode;
+  dataPath: string;
+  dataApiUrl: string;
+} = {
+  dataSource: (process.env.DATA_SOURCE as DataSourceMode) || "DEMO",
   dataPath: process.env.DATA_PATH || "./data",
   dataApiUrl: process.env.DATA_API_URL || "http://localhost:8080",
 };
 
-// ==========================================
-// API ROUTES
-// ==========================================
+let aiClient: GoogleGenAI | null = null;
+function getGeminiClient(): GoogleGenAI | null {
+  if (!aiClient && process.env.GEMINI_API_KEY) {
+    aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+  return aiClient;
+}
 
-// Health Check
-app.get("/api/health", (req, res) => {
+function validateHttpUrl(raw: string): string {
+  const parsed = new URL(raw);
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error("Only http/https dataset URLs are allowed.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("Dataset URL must not contain credentials.");
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchJson(url: string, init?: RequestInit): Promise<any> {
+  const response = await fetchWithTimeout(url, init);
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+function dockerBase(): string {
+  return validateHttpUrl(serverConfig.dataApiUrl);
+}
+
+function localRoot(): string {
+  return path.resolve(serverConfig.dataPath);
+}
+
+function safeLocalAttachment(attPath: string): string {
+  const root = path.resolve(localRoot(), "attachments");
+  const relative = attPath.replace(/^attachments[\\/]/, "");
+  const target = path.resolve(root, relative);
+  if (!target.startsWith(root + path.sep) && target !== root) {
+    throw new Error("Invalid attachment path.");
+  }
+  return target;
+}
+
+// ---------------------------------------------------------------------------
+// Core health and configuration
+// ---------------------------------------------------------------------------
+app.get("/api/health", async (_req, res) => {
+  let dataset: any = { mode: serverConfig.dataSource, status: "not_checked" };
+  try {
+    if (serverConfig.dataSource === "DOCKER") {
+      dataset = { mode: "DOCKER", ...(await fetchJson(`${dockerBase()}/health`)) };
+    } else if (serverConfig.dataSource === "LOCAL") {
+      const inboxDir = path.join(localRoot(), "inbox");
+      const files = await fs.readdir(inboxDir);
+      dataset = {
+        mode: "LOCAL",
+        status: "ok",
+        emails: files.filter((name) => /^email_.*\.json$/i.test(name)).length,
+      };
+    } else {
+      dataset = { mode: "DEMO", status: "ok", note: "Frontend synthetic demo provider" };
+    }
+  } catch (error: any) {
+    dataset = { mode: serverConfig.dataSource, status: "offline", error: error.message };
+  }
+
   res.json({
     status: "ok",
     app: "ShipSure AI",
-    version: "1.0.0",
+    version: "1.1.0-cs1",
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+    geminiModel: GEMINI_MODEL,
     config: serverConfig,
+    dataset,
     timestamp: new Date().toISOString(),
   });
 });
 
-// Get Config
-app.get("/api/config", (req, res) => {
-  res.json(serverConfig);
-});
+app.get("/api/config", (_req, res) => res.json(serverConfig));
 
-// Update Config (e.g. switch to Local folder or Docker URL)
-app.post("/api/config", (req, res) => {
-  const { dataSource, dataPath, dataApiUrl } = req.body;
-  if (dataSource) serverConfig.dataSource = dataSource;
-  if (dataPath) serverConfig.dataPath = dataPath;
-  if (dataApiUrl) serverConfig.dataApiUrl = dataApiUrl;
-  res.json({ success: true, config: serverConfig });
-});
-
-// Gemini Multi-Agent & Copilot API endpoint
-app.post("/api/copilot/chat", async (req, res) => {
-  const { prompt, context, agentId, mode } = req.body;
-  const ai = getGeminiClient();
-
-  if (!ai) {
-    return res.json({
-      fallback: true,
-      message: "Server-side GEMINI_API_KEY not configured. Using deterministic multi-agent orchestration engine.",
-    });
-  }
-
+app.post("/api/config", async (req, res) => {
   try {
-    let systemRole = "You are ShipSure Lead Orchestrator, an AI shipping documentation operations specialist.";
-    if (agentId === "verification") {
-      systemRole = "You are the Verification Engine Agent. You evaluate strict 7-field rules (Shipper, Consignee, Notify Party, POL, POD, Container Count, Gross Weight KG), calculate discrepancies mathematically, and cite exact numbers.";
-    } else if (agentId === "critic") {
-      systemRole = "You are the Zero-Guess Critic Gate. You enforce strict reliability: never guess on smudged scans, blank fields, or missing attachments. You mandate human review with confidence metrics.";
-    } else if (agentId === "revision") {
-      systemRole = "You are the Revision Intelligence Agent. You perform 3-way reconciliation (SI vs BL V1 vs BL V2), check if requested corrections were made, and flag sneaky unauthorized carrier alterations.";
-    } else if (agentId === "resolution") {
-      systemRole = "You are the Carrier Resolution & Dispatch Agent. You draft formal carrier amendment emails with line-item citations and vessel cutoff urgency.";
-    } else if (agentId === "extraction") {
-      systemRole = "You are the Document Extraction & Normalizer Agent. You extract text, normalize units (Metric Tons to Kilograms), and resolve UN/LOCODE port codes.";
-    } else if (agentId === "watchdog") {
-      systemRole = "You are the Proactive Watchdog & Memory Agent. You identify systematic carrier error patterns and cross-shipment trends.";
-    } else if (mode === "collaborative") {
-      systemRole = "You are the ShipSure Multi-Agent War Room Orchestrator. You coordinate 7 specialized agents (Orchestrator, Verification, Extraction, Critic, Revision, Resolution, Watchdog) to investigate shipping documents, provide inter-agent hand-offs, and produce carrier amendment actions.";
+    const { dataSource, dataPath, dataApiUrl } = req.body || {};
+    if (dataSource && !["DEMO", "LOCAL", "DOCKER"].includes(dataSource)) {
+      return res.status(400).json({ error: "Invalid dataSource." });
     }
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: `${systemRole}
-Shipment operations context:
-${JSON.stringify(context || {})}
-
-User request:
-${prompt}
-
-Provide a concise, professional shipping operations answer with evidence citations, defect breakdowns, and actionable next steps.`,
-    });
-
-    res.json({
-      text: response.text,
-      agent: agentId ? `ShipSure ${agentId.toUpperCase()} Agent (Gemini 3.8 Flash)` : "ShipSure Multi-Agent System (Gemini 3.8 Flash)",
-    });
+    if (dataSource) serverConfig.dataSource = dataSource;
+    if (typeof dataPath === "string" && dataPath.trim()) serverConfig.dataPath = dataPath.trim();
+    if (typeof dataApiUrl === "string" && dataApiUrl.trim()) {
+      serverConfig.dataApiUrl = validateHttpUrl(dataApiUrl.trim());
+    }
+    return res.json({ success: true, config: serverConfig });
   } catch (error: any) {
-    console.error("Gemini API error:", error);
-    res.status(500).json({ error: error.message || "Failed to generate AI response" });
+    return res.status(400).json({ error: error.message });
   }
 });
 
-// AI Vision Model & OCR Document Reader API Endpoint
-// Handles hard-to-read scans, crooked images, messy PDFs, and container tables
-app.post("/api/vision/ocr", async (req, res) => {
-  const { imageBase64, mimeType, filename, rawTextSample, docType } = req.body;
-  const ai = getGeminiClient();
-
-  // If Gemini API is available and an image is provided
-  if (ai && imageBase64) {
-    try {
-      const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "");
-      const effectiveMimeType = mimeType || "image/png";
-
-      const prompt = `You are ShipSure's Multimodal Vision OCR and Document Reader specialist.
-You are inspecting a shipping document (${docType || "Bill of Lading / Shipping Instruction"}).
-Notice: This document may be a hard-to-read scan, messy PDF, crooked scan, or contain tabular container manifests.
-
-Your tasks:
-1. De-skew and optically read the entire document, handling crooked angles, low contrast, and tabular structures.
-2. Extract the verbatim text and normalize the key 7 shipping fields:
-   - Shipper (Company name and address)
-   - Consignee (Company name and address)
-   - Notify Party (Company name and address)
-   - Port of Loading (POL)
-   - Port of Discharge (POD)
-   - Container Count (Total integer containers)
-   - Gross Weight in KG (Convert Metric Tons to KG if necessary: 1 MT = 1,000 KG)
-3. If any field or character has optical ambiguity (smudged digit, faded print, tear), state the character ambiguity and confidence percentages. Do NOT hallucinate or guess.
-
-Return valid JSON with format:
-{
-  "rawOcrText": "Extracted OCR text with table rows preserved...",
-  "orientationCorrection": "0deg / corrected -8deg skew",
-  "qualityScore": 0.92,
-  "fields": {
-    "shipper": { "value": "...", "confidence": 0.98, "rawSnippet": "..." },
-    "consignee": { "value": "...", "confidence": 0.99, "rawSnippet": "..." },
-    "notify_party": { "value": "...", "confidence": 0.98, "rawSnippet": "..." },
-    "port_of_loading": { "value": "...", "confidence": 0.95, "rawSnippet": "..." },
-    "port_of_discharge": { "value": "...", "confidence": 0.96, "rawSnippet": "..." },
-    "container_count": { "value": 5, "confidence": 0.99, "rawSnippet": "..." },
-    "gross_weight_kg": { "value": 64000, "confidence": 0.65, "rawSnippet": "...", "opticalWarning": "Smudged digit on BL scan" }
-  },
-  "tablesExtracted": [
-    { "headers": ["Container No", "Seal No", "Type", "Gross Wt"], "rows": [["MSCU1234567", "ML-9921", "40HC", "12,800 KG"]] }
-  ],
-  "opticalAmbiguities": [
-    { "field": "gross_weight_kg", "candidates": ["64,000 KG (64%)", "68,000 KG (36%)"], "recommendation": "Zero-Guess Human Review required" }
-  ]
-}`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: [
-          {
-            inlineData: {
-              data: cleanBase64,
-              mimeType: effectiveMimeType,
-            },
-          },
-          prompt,
-        ],
-        config: {
-          responseMimeType: "application/json",
-        },
-      });
-
-      const parsed = JSON.parse(response.text || "{}");
-      return res.json({
-        success: true,
-        source: "Gemini 3.8 Flash Multimodal Vision Model",
-        data: parsed,
-      });
-    } catch (err: any) {
-      console.error("Gemini Vision OCR Error:", err);
-      // Fall through to deterministic OCR heuristic reader
+// ---------------------------------------------------------------------------
+// Dataset adapter: official LOCAL bundle or official Docker HTTP interface.
+// Ground truth is intentionally never read here.
+// ---------------------------------------------------------------------------
+app.get("/api/dataset/emails", async (_req, res) => {
+  try {
+    if (serverConfig.dataSource === "DOCKER") {
+      return res.json(await fetchJson(`${dockerBase()}/emails`));
     }
+    if (serverConfig.dataSource === "LOCAL") {
+      const inboxDir = path.join(localRoot(), "inbox");
+      const names = (await fs.readdir(inboxDir))
+        .filter((name) => /^email_.*\.json$/i.test(name))
+        .sort();
+      const emails = await Promise.all(
+        names.map(async (name) => JSON.parse(await fs.readFile(path.join(inboxDir, name), "utf8"))),
+      );
+      return res.json(emails);
+    }
+    return res.json([]);
+  } catch (error: any) {
+    return res.status(502).json({ error: `Dataset read failed: ${error.message}` });
+  }
+});
+
+app.get("/api/dataset/emails/:emailId", async (req, res) => {
+  try {
+    const emailId = req.params.emailId;
+    if (!/^email_[A-Za-z0-9_-]+$/i.test(emailId)) {
+      return res.status(400).json({ error: "Invalid email id." });
+    }
+    if (serverConfig.dataSource === "DOCKER") {
+      return res.json(await fetchJson(`${dockerBase()}/emails/${encodeURIComponent(emailId)}`));
+    }
+    if (serverConfig.dataSource === "LOCAL") {
+      const file = path.join(localRoot(), "inbox", `${emailId}.json`);
+      return res.json(JSON.parse(await fs.readFile(file, "utf8")));
+    }
+    return res.status(404).json({ error: "DEMO mode is served by the frontend demo provider." });
+  } catch (error: any) {
+    return res.status(502).json({ error: `Email read failed: ${error.message}` });
+  }
+});
+
+app.get("/api/dataset/attachment", async (req, res) => {
+  try {
+    const attPath = String(req.query.path || "");
+    if (!attPath.startsWith("attachments/")) {
+      return res.status(400).json({ error: "Attachment path must start with attachments/." });
+    }
+
+    if (serverConfig.dataSource === "DOCKER") {
+      const upstream = await fetchWithTimeout(`${dockerBase()}/${attPath}`);
+      if (!upstream.ok) throw new Error(`${upstream.status} ${upstream.statusText}`);
+      const body = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
+      return res.send(body);
+    }
+
+    if (serverConfig.dataSource === "LOCAL") {
+      return res.sendFile(safeLocalAttachment(attPath));
+    }
+
+    return res.status(404).json({ error: "DEMO attachments are served by the frontend demo provider." });
+  } catch (error: any) {
+    return res.status(502).json({ error: `Attachment read failed: ${error.message}` });
+  }
+});
+
+app.get("/api/dataset/sample-submission", async (_req, res) => {
+  try {
+    if (serverConfig.dataSource === "DOCKER") {
+      return res.json(await fetchJson(`${dockerBase()}/sample_submission`));
+    }
+    if (serverConfig.dataSource === "LOCAL") {
+      const file = path.join(localRoot(), "sample_submission.json");
+      return res.json(JSON.parse(await fs.readFile(file, "utf8")));
+    }
+    return res.status(404).json({ error: "No official sample submission in DEMO mode." });
+  } catch (error: any) {
+    return res.status(502).json({ error: `Sample submission read failed: ${error.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CS1 orchestration and revision workflow
+// ---------------------------------------------------------------------------
+app.post("/api/orchestration/run", async (req, res) => {
+  try {
+    const caseObj = req.body?.case;
+    if (!caseObj?.id || !caseObj?.category) {
+      return res.status(400).json({ error: "A valid ShipmentCase is required." });
+    }
+    const events = orchestrateCase(caseObj);
+    await auditRepository.append(events);
+    return res.json({ caseId: caseObj.id, events });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/orchestration/events", async (req, res) => {
+  try {
+    return res.json(await auditRepository.list(req.query.caseId ? String(req.query.caseId) : undefined));
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/revision/compare", (req, res) => {
+  try {
+    const { caseId, si, blV1, blV2 } = req.body || {};
+    if (!caseId || !si || !blV1 || !blV2) {
+      return res.status(400).json({ error: "caseId, si, blV1 and blV2 are required." });
+    }
+    return res.json(compareRevision(caseId, si, blV1, blV2));
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Gemini Copilot integration. Gemini explains/summarizes; deterministic modules
+// should remain responsible for comparison and status decisions.
+// ---------------------------------------------------------------------------
+app.post("/api/copilot/chat", async (req, res) => {
+  const { prompt, context, agentId, mode } = req.body || {};
+  const ai = getGeminiClient();
+  if (!ai) {
+    return res.status(503).json({
+      error: "GEMINI_API_KEY is not configured.",
+      fallback: true,
+    });
+  }
+  if (typeof prompt !== "string" || !prompt.trim()) {
+    return res.status(400).json({ error: "prompt is required." });
   }
 
-  // Deterministic Vision & OCR engine (works offline or when API key is not configured)
-  const isSmudged = (rawTextSample || "").includes("SMUDGE") || (rawTextSample || "").includes("UNREADABLE") || (filename || "").includes("8411");
-  const isTable = (rawTextSample || "").includes("TABLE") || (filename || "").includes("table") || (filename || "").includes("packing");
-
-  const simulatedOcr = {
-    rawOcrText: rawTextSample || `[AI VISION OCR EXTRACTED FROM SCAN ${filename || "BL_SCAN.PDF"}]\nBILL OF LADING DRAFT\nB/L: MSCU881029\nShipper: HYUNDAI HEAVY INDUSTRIES CO LTD\nConsignee: ROTTERDAM OFFSHORE ENERGY BV\nNotify Party: ROTTERDAM OFFSHORE ENERGY BV\nLoad Port: BUSAN [KRPUS]\nDischarge Port: ROTTERDAM [NLRTM]\nContainer Count: 5 Units (40' High Cube)\nGross Weight: 64,000 KG [Optical smudge detected: 6#,000 KG]`,
-    orientationCorrection: "Auto-deskewed +7.4° counter-clockwise (Perspective matrix calibrated)",
-    qualityScore: isSmudged ? 0.72 : 0.96,
-    isCrooked: true,
-    hasTable: true,
-    fields: {
-      shipper: { value: "HYUNDAI HEAVY INDUSTRIES CO LTD", confidence: 0.98, rawSnippet: "Shipper: HYUNDAI HEAVY INDUSTRIES CO LTD" },
-      consignee: { value: "ROTTERDAM OFFSHORE ENERGY BV", confidence: 0.99, rawSnippet: "Consignee: ROTTERDAM OFFSHORE ENERGY BV" },
-      notify_party: { value: "ROTTERDAM OFFSHORE ENERGY BV", confidence: 0.98, rawSnippet: "Notify Party: ROTTERDAM OFFSHORE ENERGY BV" },
-      port_of_loading: { value: "BUSAN", confidence: 0.95, rawSnippet: "Load Port: BUSAN [KRPUS]" },
-      port_of_discharge: { value: "ROTTERDAM", confidence: 0.96, rawSnippet: "Discharge Port: ROTTERDAM [NLRTM]" },
-      container_count: { value: 5, confidence: 0.97, rawSnippet: "Container Count: 5 Units" },
-      gross_weight_kg: {
-        value: 64000,
-        confidence: isSmudged ? 0.62 : 0.95,
-        rawSnippet: isSmudged ? "Gross Weight: 6#,000 KG" : "Gross Weight: 64,000 KG",
-        opticalWarning: isSmudged ? "Ambiguous digit at character index 2 (optical ambiguity between '4' and '8')" : undefined
-      }
-    },
-    tablesExtracted: [
-      {
-        headers: ["Container No", "Seal No", "Size/Type", "Tare Wt", "Cargo Gross Wt"],
-        rows: [
-          ["HMCU9018291", "KR-990182", "40HC", "3,820 KG", "12,800 KG"],
-          ["HMCU9018292", "KR-990183", "40HC", "3,820 KG", "12,800 KG"],
-          ["HMCU9018293", "KR-990184", "40HC", "3,820 KG", "12,800 KG"],
-          ["HMCU9018294", "KR-990185", "40HC", "3,820 KG", "12,800 KG"],
-          ["HMCU9018295", "KR-990186", "40HC", "3,820 KG", "12,800 KG"],
-        ]
-      }
-    ],
-    opticalAmbiguities: isSmudged ? [
-      {
-        field: "gross_weight_kg",
-        candidates: ["64,000 KG (Confidence: 62%)", "68,000 KG (Confidence: 38%)"],
-        recommendation: "Zero-Guess Critic Gate: Do not guess silently. Human Optical Verification Required."
-      }
-    ] : []
+  const roles: Record<string, string> = {
+    verification: "Explain deterministic seven-field verification results. Do not invent values.",
+    critic: "Explain reliability flags and why a case requires human review. Do not guess missing values.",
+    revision: "Explain the supplied SI vs BL V1 vs BL V2 diff. Do not invent changes.",
+    resolution: "Draft a correction request from supplied confirmed discrepancies. Require human approval before sending.",
+    extraction: "Explain supplied document extraction evidence. Do not fabricate OCR output.",
+    watchdog: "Summarize supplied operational patterns. Distinguish correlation from causation.",
+    orchestrator: "Coordinate the supplied ShipSure case state and suggest the next workflow step.",
   };
 
-  res.json({
-    success: true,
-    source: ai ? "Gemini 3.8 Flash Multimodal Vision Model (Scan Processed)" : "ShipSure Neural Vision OCR Engine (Deterministic)",
-    data: simulatedOcr
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: `${roles[agentId] || roles.orchestrator}\nMode: ${mode || "collaborative"}\n\nVerified system context:\n${JSON.stringify(context || {}, null, 2)}\n\nUser request:\n${prompt}\n\nOnly use facts present in the verified system context. If evidence is missing, say it requires review.`,
+    });
+    return res.json({ text: response.text, agent: agentId || "orchestrator", model: GEMINI_MODEL });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Gemini request failed." });
+  }
 });
 
-// Proxy submission to Docker Scoring Server
-app.post("/api/evaluation/submit", async (req, res) => {
-  const { dockerUrl, submission } = req.body;
-  const targetUrl = (dockerUrl || serverConfig.dataApiUrl || "http://localhost:8080").replace(/\/$/, "") + "/submit";
+// DS1 integration endpoint: no fake OCR result when the AI service is absent.
+app.post("/api/vision/ocr", async (req, res) => {
+  const { imageBase64, mimeType, docType } = req.body || {};
+  const ai = getGeminiClient();
+  if (!ai) return res.status(503).json({ error: "GEMINI_API_KEY is not configured." });
+  if (!imageBase64) return res.status(400).json({ error: "imageBase64 is required." });
 
   try {
-    const response = await fetch(targetUrl, {
+    const cleanBase64 = String(imageBase64).replace(/^data:[^;]+;base64,/, "");
+    const prompt = `Extract the seven required shipping fields from this ${docType || "shipping document"}. Preserve raw evidence snippets. If a required value is unreadable or ambiguous, mark it for human review instead of guessing. Return JSON only.`;
+    const response = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [{ inlineData: { data: cleanBase64, mimeType: mimeType || "image/png" } }, prompt],
+      config: { responseMimeType: "application/json" },
+    });
+    return res.json({ success: true, source: GEMINI_MODEL, data: JSON.parse(response.text || "{}") });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Vision extraction failed." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Official scoring proxy. Never fabricate a score if the scoring server is down.
+// ---------------------------------------------------------------------------
+app.post("/api/evaluation/submit", async (req, res) => {
+  try {
+    if (serverConfig.dataSource !== "DOCKER") {
+      return res.status(409).json({ error: "Switch DATA_SOURCE to DOCKER before submitting to the official scoring endpoint." });
+    }
+    const submission = req.body?.submission ?? req.body;
+    if (!submission || typeof submission !== "object" || Array.isArray(submission)) {
+      return res.status(400).json({ error: "submission must be an object keyed by email_id." });
+    }
+    const result = await fetchJson(`${dockerBase()}/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(submission),
     });
-
-    if (!response.ok) {
-      throw new Error(`Scoring server returned HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    res.json(data);
-  } catch (err: any) {
-    res.status(502).json({
-      error: `Could not reach scoring server at ${targetUrl}: ${err.message}`,
-      simulatedFallback: {
-        final_score: 95.8,
-        stage1_macro_f1: 0.982,
-        stage3_defect_f1: 0.965,
-        end_to_end_accuracy: 0.941,
-        message: "Simulated score - Docker server unreachable or not started yet",
-      },
-    });
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(502).json({ error: `Official scoring server unavailable: ${error.message}` });
   }
 });
 
-// ==========================================
-// VITE MIDDLEWARE & STATIC SERVING
-// ==========================================
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`ShipSure AI server listening on http://0.0.0.0:${PORT}`);
+    console.log(`ShipSure AI listening on 0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
