@@ -20,7 +20,9 @@ class DatasetService {
   private emails: EmailRecord[] = [];
 
   constructor() {
-    this.initDemoData();
+    if (this.mode === "DEMO") {
+      this.initDemoData();
+    }
   }
 
   private initDemoData() {
@@ -184,22 +186,33 @@ class DatasetService {
   }
 
   public async loadFromBackend(): Promise<void> {
+    // DEMO mode: use synthetic frontend data
     if (this.mode === "DEMO") {
       this.initDemoData();
       return;
     }
 
-    const response = await fetch("/api/dataset/emails");
+    // LOCAL / DOCKER mode:
+    // Load both raw inbox emails and processed shipment cases
+    const [emailResponse, caseResponse] = await Promise.all([
+      fetch("/api/dataset/emails"),
+      fetch("/api/cases")
+    ]);
 
-    if (!response.ok) {
+    if (!emailResponse.ok) {
       throw new Error(
-        `Failed to load dataset: HTTP ${response.status}`
+        `Failed to load emails: HTTP ${emailResponse.status}`
       );
     }
 
-    const emails = await response.json();
+    this.emails = await emailResponse.json();
 
-    this.emails = emails;
+    // Cases may still be empty before DS1/DS2 process the emails.
+    if (caseResponse.ok) {
+      this.cases = await caseResponse.json();
+    } else {
+      this.cases = [];
+    }
   }
 }
 
