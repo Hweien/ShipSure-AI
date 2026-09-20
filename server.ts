@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import ExcelJS from "exceljs";
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
+import { createHash } from "crypto";
 
 import { compareRevision } from "./server/services/revisionEngine";
 import { orchestrateCase } from "./server/services/orchestrator";
@@ -54,6 +55,74 @@ const pipelineRunState: PipelineRunState = {
   finishedAt: null,
   failures: [],
 };
+
+const PROCESSING_VERSION =
+  "pipeline-v1";
+
+const RUNTIME_DIR =
+  path.resolve(
+    process.cwd(),
+    "runtime"
+  );
+
+const PROCESSED_CACHE_FILE =
+  path.join(
+    RUNTIME_DIR,
+    "processed-email-cases.json"
+  );
+
+const EXISTING_CASES_FILE =
+  path.join(
+    RUNTIME_DIR,
+    "existing-cases.json"
+  );
+
+type ProcessedEmailEntry = {
+  processedAt: string;
+  fingerprint: string;
+  processingVersion: string;
+  case: any;
+};
+
+type ProcessedEmailCache =
+  Record<
+    string,
+    ProcessedEmailEntry
+  >;
+
+let processedEmailCache:
+  ProcessedEmailCache = {};
+
+function createEmailFingerprint(
+  email: any
+): string {
+  const source =
+    JSON.stringify({
+      emailId:
+        email.email_id,
+      from:
+        email.from ||
+        email.sender ||
+        "",
+      to:
+        email.to ||
+        email.recipient ||
+        "",
+      subject:
+        email.subject ||
+        "",
+      body:
+        email.body ||
+        "",
+      attachments:
+        email.attachments ||
+        [],
+    });
+
+  return createHash("sha256")
+    .update(source)
+    .digest("hex");
+}
 
 let serverConfig: {
   dataSource: DataSourceMode;
@@ -208,6 +277,139 @@ function extensionFromAttachment(attPath: string): string {
   return path.extname(attPath).toLowerCase();
 }
 
+async function saveProcessedEmailCache() {
+  await fs.mkdir(
+    RUNTIME_DIR,
+    {
+      recursive: true,
+    }
+  );
+
+  const tempFile =
+    `${PROCESSED_CACHE_FILE}.tmp`;
+
+  await fs.writeFile(
+    tempFile,
+    JSON.stringify(
+      processedEmailCache,
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  await fs.rename(
+    tempFile,
+    PROCESSED_CACHE_FILE
+  );
+}
+
+async function loadProcessedState() {
+  await fs.mkdir(
+    RUNTIME_DIR,
+    {
+      recursive: true,
+    }
+  );
+
+  // ----------------------------------
+  // Load permanent processed cache
+  // ----------------------------------
+  try {
+    const content =
+      await fs.readFile(
+        PROCESSED_CACHE_FILE,
+        "utf8"
+      );
+
+    processedEmailCache =
+      JSON.parse(content);
+
+    for (
+      const entry of
+      Object.values(
+        processedEmailCache
+      )
+    ) {
+      if (entry?.case) {
+        caseRepository.save(
+          entry.case
+        );
+      }
+    }
+
+    console.log(
+      `[Pipeline Cache] Loaded ${
+        Object.keys(
+          processedEmailCache
+        ).length
+      } cached emails`
+    );
+  } catch (error: any) {
+    if (
+      error?.code !==
+      "ENOENT"
+    ) {
+      console.error(
+        "[Pipeline Cache] Failed to load cache:",
+        error
+      );
+    }
+  }
+
+  // ----------------------------------
+  // One-time recovery of cases from
+  // your current run
+  // ----------------------------------
+  try {
+    const content =
+      await fs.readFile(
+        EXISTING_CASES_FILE,
+        "utf8"
+      );
+
+    const existingCases =
+      JSON.parse(content);
+
+    if (
+      Array.isArray(
+        existingCases
+      )
+    ) {
+      for (
+        const shipmentCase of
+        existingCases
+      ) {
+        if (
+          shipmentCase?.id &&
+          shipmentCase?.emailId &&
+          !processedEmailCache[
+            shipmentCase.emailId
+          ]
+        ) {
+          caseRepository.save(
+            shipmentCase
+          );
+        }
+      }
+
+      console.log(
+        `[Pipeline Cache] Restored ${existingCases.length} existing cases`
+      );
+    }
+  } catch (error: any) {
+    if (
+      error?.code !==
+      "ENOENT"
+    ) {
+      console.error(
+        "[Pipeline Cache] Existing-case restore failed:",
+        error
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Core health and configuration
 // ---------------------------------------------------------------------------
@@ -360,8 +562,32 @@ Return ONLY valid JSON:
       evidence: parsed.evidence,
     });
   } catch (error: any) {
-    console.error("Email classification error:", error);
-    return res.status(500).json({ error: "Email classification failed" });
+    console.error(
+      "Email classification error:",
+      error
+    );
+
+    if (error?.status === 429) {
+      return res.status(429).json({
+        success: false,
+        error:
+          "Gemini email classification quota exceeded",
+      });
+    }
+
+    if (error?.status === 503) {
+      return res.status(503).json({
+        success: false,
+        error:
+          "Gemini email classification temporarily unavailable",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error:
+        "Email classification failed",
+    });
   }
 });
 
@@ -880,6 +1106,44 @@ app.post(
         });
       }
 
+      const force =
+        req.query.force ===
+        "true";
+
+      const fingerprint =
+        createEmailFingerprint(
+          email
+        );
+
+      const cached =
+        processedEmailCache[
+          email.email_id
+        ];
+
+      if (
+        !force &&
+        cached &&
+        cached.fingerprint ===
+          fingerprint &&
+        cached.processingVersion ===
+          PROCESSING_VERSION
+      ) {
+        caseRepository.save(
+          cached.case
+        );
+
+        console.log(
+          `[Pipeline] Reused cached result for ${email.email_id}`
+        );
+
+        return res.json({
+          success: true,
+          cached: true,
+          case: cached.case,
+          events: [],
+        });
+      }
+
       const shipmentCase =
         await processEmailPipeline(
           email,
@@ -887,6 +1151,22 @@ app.post(
         );
 
       caseRepository.save(shipmentCase);
+
+      processedEmailCache[
+        email.email_id
+      ] = {
+        processedAt:
+          new Date().toISOString(),
+
+        fingerprint,
+
+        processingVersion:
+          PROCESSING_VERSION,
+
+        case: shipmentCase,
+      };
+
+      await saveProcessedEmailCache();
 
       const events =
         orchestrateCase(shipmentCase);
@@ -914,61 +1194,84 @@ app.post(
   }
 );
 
-async function processAllEmails(): Promise<void> {
-  if (pipelineRunState.running) {
-    console.log(
-      "[Pipeline] Full inbox processing is already running."
-    );
+async function processNewEmails():
+  Promise<void> {
+
+  if (
+    pipelineRunState.running
+  ) {
     return;
   }
 
-  pipelineRunState.running = true;
+  pipelineRunState.running =
+    true;
+
   pipelineRunState.total = 0;
   pipelineRunState.processed = 0;
   pipelineRunState.failed = 0;
   pipelineRunState.skipped = 0;
-  pipelineRunState.currentEmailId = null;
+
+  pipelineRunState.currentEmailId =
+    null;
+
   pipelineRunState.startedAt =
     new Date().toISOString();
-  pipelineRunState.finishedAt = null;
+
+  pipelineRunState.finishedAt =
+    null;
+
   pipelineRunState.failures = [];
 
   try {
     let emails: any[] = [];
 
-    // --------------------------------------------------
-    // Load full inbox
-    // --------------------------------------------------
-    if (serverConfig.dataSource === "DOCKER") {
-      emails = await fetchJson(
-        `${dockerBase()}/emails`
-      );
-    } else if (
-      serverConfig.dataSource === "LOCAL"
+    if (
+      serverConfig.dataSource ===
+      "DOCKER"
     ) {
-      const inboxDir = path.join(
-        localRoot(),
-        "inbox"
-      );
+      emails =
+        await fetchJson(
+          `${dockerBase()}/emails`
+        );
+    } else if (
+      serverConfig.dataSource ===
+      "LOCAL"
+    ) {
+      const inboxDir =
+        path.join(
+          localRoot(),
+          "inbox"
+        );
 
-      const names = (
-        await fs.readdir(inboxDir)
-      )
-        .filter((name) =>
-          /^email_.*\.json$/i.test(name)
-        )
-        .sort();
-
-      emails = await Promise.all(
-        names.map(async (name) =>
-          JSON.parse(
-            await fs.readFile(
-              path.join(inboxDir, name),
-              "utf8"
-            )
+      const names =
+        (
+          await fs.readdir(
+            inboxDir
           )
         )
-      );
+          .filter(
+            (name) =>
+              /^email_.*\.json$/i.test(
+                name
+              )
+          )
+          .sort();
+
+      emails =
+        await Promise.all(
+          names.map(
+            async (name) =>
+              JSON.parse(
+                await fs.readFile(
+                  path.join(
+                    inboxDir,
+                    name
+                  ),
+                  "utf8"
+                )
+              )
+          )
+        );
     } else {
       throw new Error(
         "Automatic pipeline requires LOCAL or DOCKER mode."
@@ -978,70 +1281,160 @@ async function processAllEmails(): Promise<void> {
     pipelineRunState.total =
       emails.length;
 
+    const queue: {
+      email: any;
+      fingerprint: string;
+    }[] = [];
+
+    // ----------------------------------
+    // Decide which emails actually need
+    // Gemini.
+    // ----------------------------------
+    for (
+      const email of emails
+    ) {
+      const fingerprint =
+        createEmailFingerprint(
+          email
+        );
+
+      const cached =
+        processedEmailCache[
+          email.email_id
+        ];
+
+      // Already permanently cached
+      if (
+        cached &&
+        cached.fingerprint ===
+          fingerprint &&
+        cached.processingVersion ===
+          PROCESSING_VERSION
+      ) {
+        caseRepository.save(
+          cached.case
+        );
+
+        pipelineRunState.skipped++;
+
+        continue;
+      }
+
+      // --------------------------------
+      // One-time migration:
+      // case existed before we added
+      // persistent caching.
+      // --------------------------------
+      const existingCase =
+        caseRepository
+          .getAll()
+          .find(
+            (item) =>
+              item.emailId ===
+              email.email_id
+          );
+
+      if (
+        existingCase &&
+        !cached
+      ) {
+        processedEmailCache[
+          email.email_id
+        ] = {
+          processedAt:
+            new Date()
+              .toISOString(),
+
+          fingerprint,
+
+          processingVersion:
+            PROCESSING_VERSION,
+
+          case: existingCase,
+        };
+
+        pipelineRunState.skipped++;
+
+        continue;
+      }
+
+      // New or changed email
+      queue.push({
+        email,
+        fingerprint,
+      });
+    }
+
+    if (
+      pipelineRunState.skipped >
+      0
+    ) {
+      await saveProcessedEmailCache();
+    }
+
     console.log(
-      `[Pipeline] Starting automatic processing of ${emails.length} emails`
+      `[Pipeline] Inbox total: ${emails.length}`
     );
 
-    // --------------------------------------------------
-    // Process sequentially
-    // Important: do NOT Promise.all() 520 Gemini calls.
-    // --------------------------------------------------
+    console.log(
+      `[Pipeline] Already processed: ${pipelineRunState.skipped}`
+    );
+
+    console.log(
+      `[Pipeline] New/changed: ${queue.length}`
+    );
+
+    // ----------------------------------
+    // Only new/changed emails enter
+    // Gemini / DS1 / DS2.
+    // ----------------------------------
     for (
       let index = 0;
-      index < emails.length;
+      index < queue.length;
       index++
     ) {
-      const email = emails[index];
+      const {
+        email,
+        fingerprint,
+      } = queue[index];
 
       pipelineRunState.currentEmailId =
         email.email_id;
 
       console.log(
-        `[Pipeline] ${index + 1}/${emails.length} - ${email.email_id}`
+        `[Pipeline] New email ${index + 1}/${queue.length}: ${email.email_id}`
       );
 
       try {
-        // ----------------------------------------------
-        // Skip cases already processed
-        // ----------------------------------------------
-        const existing =
-          caseRepository
-            .getAll()
-            .find(
-              (item) =>
-                item.emailId ===
-                email.email_id
-            );
-
-        if (existing) {
-          pipelineRunState.skipped++;
-
-          console.log(
-            `[Pipeline] Skipped ${email.email_id} - already processed`
-          );
-
-          continue;
-        }
-
-        // ----------------------------------------------
-        // DS1 → DS2
-        // ----------------------------------------------
         const shipmentCase =
           await processEmailPipeline(
             email,
             internalPostJson
           );
 
-        // ----------------------------------------------
-        // Save case
-        // ----------------------------------------------
         caseRepository.save(
           shipmentCase
         );
 
-        // ----------------------------------------------
-        // Generate CS1 orchestration events
-        // ----------------------------------------------
+        // Only mark as processed after
+        // successful completion.
+        processedEmailCache[
+          email.email_id
+        ] = {
+          processedAt:
+            new Date()
+              .toISOString(),
+
+          fingerprint,
+
+          processingVersion:
+            PROCESSING_VERSION,
+
+          case: shipmentCase,
+        };
+
+        await saveProcessedEmailCache();
+
         const events =
           orchestrateCase(
             shipmentCase
@@ -1054,79 +1447,89 @@ async function processAllEmails(): Promise<void> {
         pipelineRunState.processed++;
 
         console.log(
-          `[Pipeline] Completed ${email.email_id} -> ${shipmentCase.category} / ${shipmentCase.verificationStatus}`
+          `[Pipeline] Completed ${email.email_id}`
         );
       } catch (error: any) {
-        pipelineRunState.failed++;
-
         const message =
           error?.message ||
           "Unknown processing error";
 
-        pipelineRunState.failures.push({
-          emailId: email.email_id,
-          error: message,
-        });
+        pipelineRunState.failed++;
+
+        pipelineRunState
+          .failures
+          .push({
+            emailId:
+              email.email_id,
+            error: message,
+          });
 
         console.error(
           `[Pipeline] Failed ${email.email_id}: ${message}`
         );
 
-        // Do NOT stop the remaining 519 emails.
+        // IMPORTANT:
+        // Don't burn more requests while
+        // the quota window is exhausted.
+        if (
+          message.includes(
+            "429"
+          ) ||
+          message
+            .toLowerCase()
+            .includes(
+              "quota"
+            )
+        ) {
+          console.warn(
+            "[Pipeline] Gemini quota reached. Remaining emails will be retried on the next inbox check."
+          );
+
+          break;
+        }
       }
     }
   } catch (error: any) {
     console.error(
-      "[Pipeline] Full inbox processing failed:",
+      "[Pipeline] Inbox processing failed:",
       error
     );
   } finally {
-    pipelineRunState.running = false;
-    pipelineRunState.currentEmailId = null;
+    pipelineRunState.running =
+      false;
+
+    pipelineRunState.currentEmailId =
+      null;
+
     pipelineRunState.finishedAt =
       new Date().toISOString();
-
-    console.log(
-      "[Pipeline] Full inbox processing finished"
-    );
-
-    console.log(
-      `[Pipeline] Processed: ${pipelineRunState.processed}`
-    );
-
-    console.log(
-      `[Pipeline] Failed: ${pipelineRunState.failed}`
-    );
-
-    console.log(
-      `[Pipeline] Skipped: ${pipelineRunState.skipped}`
-    );
   }
 }
 
 app.post(
-  "/api/pipeline/process-all",
+  "/api/pipeline/process-new",
   (_req, res) => {
-    if (pipelineRunState.running) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "Full inbox processing is already running.",
-        status: pipelineRunState,
-      });
+    if (
+      pipelineRunState.running
+    ) {
+      return res
+        .status(409)
+        .json({
+          success: false,
+          message:
+            "Inbox processing is already running.",
+        });
     }
 
-    // Start asynchronously.
-    // Do NOT await all 520 emails inside this request.
-    void processAllEmails();
+    void processNewEmails();
 
-    return res.status(202).json({
-      success: true,
-      message:
-        "Automatic processing of the full inbox has started.",
-      total:
-        pipelineRunState.total,
-    });
+    return res
+      .status(202)
+      .json({
+        success: true,
+        message:
+          "New-email processing started.",
+      });
   }
 );
 
@@ -1141,20 +1544,27 @@ app.get(
     const progress =
       pipelineRunState.total > 0
         ? Math.round(
-            (completed /
-              pipelineRunState.total) *
-              100
+            (
+              completed /
+              pipelineRunState.total
+            ) * 100
           )
         : 0;
 
     return res.json({
       ...pipelineRunState,
-
       completed,
       progress,
 
+      cachedEmails:
+        Object.keys(
+          processedEmailCache
+        ).length,
+
       totalCases:
-        caseRepository.getAll().length,
+        caseRepository
+          .getAll()
+          .length,
     });
   }
 );
@@ -1374,6 +1784,8 @@ app.post("/api/evaluation/submit", async (req, res) => {
 });
 
 async function startServer() {
+  await loadProcessedState();
+  
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1391,32 +1803,44 @@ async function startServer() {
     "0.0.0.0",
     () => {
       console.log(
-        `ShipSure AI listening on http://0.0.0.0:${PORT}`
+        `ShipSure AI listening on 0.0.0.0:${PORT}`
       );
 
-      // --------------------------------------------------
-      // Optional automatic inbox processing on startup
-      // --------------------------------------------------
       if (
         process.env
-          .AUTO_PROCESS_DATASET ===
-          "true" &&
-        (
-          serverConfig.dataSource ===
-            "DOCKER" ||
-          serverConfig.dataSource ===
-            "LOCAL"
-        )
+          .AUTO_PROCESS_NEW_EMAILS ===
+          "true"
       ) {
+        const intervalMs =
+          Number(
+            process.env
+              .INBOX_POLL_INTERVAL_MS ||
+              60000
+          );
+
         console.log(
-          "[Pipeline] AUTO_PROCESS_DATASET enabled."
+          `[Pipeline] New-email watcher enabled (${intervalMs} ms)`
         );
 
-        // Give the server a moment to finish starting
-        // before it begins calling its own DS1 endpoints.
-        setTimeout(() => {
-          void processAllEmails();
-        }, 1500);
+        // First check after server is ready
+        setTimeout(
+          () => {
+            void processNewEmails();
+          },
+          1500
+        );
+
+        // Continue checking inbox
+        setInterval(
+          () => {
+            if (
+              !pipelineRunState.running
+            ) {
+              void processNewEmails();
+            }
+          },
+          intervalMs
+        );
       }
     }
   );
