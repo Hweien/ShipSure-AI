@@ -35,13 +35,19 @@ export default function App() {
   const [initialFilterField, setInitialFilterField] = useState<ComparisonField | undefined>(undefined);
 
   // Reload data from provider
-  const refreshData = () => {
-    setCases([...datasetProvider.getCases()]);
-    setEmails([...datasetProvider.getEmails()]);
+  const refreshData = async () => {
+    try {
+      await datasetProvider.loadFromBackend();
+
+      setCases([...datasetProvider.getCases()]);
+      setEmails([...datasetProvider.getEmails()]);
+    } catch (error) {
+      console.error("Failed to load ShipSure dataset:", error);
+    }
   };
 
   useEffect(() => {
-    refreshData();
+    void refreshData();
   }, []);
 
   const humanReviewCount = cases.filter(
