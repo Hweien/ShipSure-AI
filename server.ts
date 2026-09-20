@@ -12,6 +12,7 @@ import { compareRevision } from "./server/services/revisionEngine";
 import { orchestrateCase } from "./server/services/orchestrator";
 import { JsonAuditRepository } from "./server/services/auditRepository";
 import { caseRepository } from "./server/services/caseRepository";
+import { processEmailPipeline } from "./server/services/processingPipeline";
 
 dotenv.config();
 
@@ -56,22 +57,69 @@ function validateHttpUrl(raw: string): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+async function fetchWithTimeout(
+  url: string,
+  init?: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller =
+    new AbortController();
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
+
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal
+    });
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchJson(url: string, init?: RequestInit): Promise<any> {
-  const response = await fetchWithTimeout(url, init);
+async function fetchJson(
+  url: string,
+  init?: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<any> {
+  const response =
+    await fetchWithTimeout(
+      url,
+      init,
+      timeoutMs
+    );
+
+  const text =
+    await response.text();
+
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    let details = text;
+
+    try {
+      const parsed =
+        JSON.parse(text);
+
+      details =
+        parsed.error ||
+        parsed.message ||
+        text;
+    } catch {
+      // Keep raw response.
+    }
+
+    throw new Error(
+      `${response.status} ${response.statusText}: ${details}`
+    );
   }
-  return response.json();
+
+  if (!text) {
+    return null;
+  }
+
+  return JSON.parse(text);
 }
 
 function dockerBase(): string {
@@ -657,6 +705,137 @@ app.post("/api/cases", (req, res) => {
   const saved = caseRepository.save(shipmentCase);
   return res.status(201).json(saved);
 });
+
+app.post(
+  "/api/pipeline/process/:emailId",
+  async (req, res) => {
+    try {
+      const emailId =
+        req.params.emailId;
+
+      if (
+        !/^email_[A-Za-z0-9_-]+$/i.test(
+          emailId
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            error: "Invalid email id",
+          });
+      }
+
+      // -------------------------------------
+      // Load email from official data source
+      // -------------------------------------
+      let email: any;
+
+      if (
+        serverConfig.dataSource ===
+        "DOCKER"
+      ) {
+        email = await fetchJson(
+          `${dockerBase()}/emails/${encodeURIComponent(
+            emailId
+          )}`
+        );
+      } else if (
+        serverConfig.dataSource ===
+        "LOCAL"
+      ) {
+        const file = path.join(
+          localRoot(),
+          "inbox",
+          `${emailId}.json`
+        );
+
+        email = JSON.parse(
+          await fs.readFile(
+            file,
+            "utf8"
+          )
+        );
+      } else {
+        return res.status(409).json({
+          error:
+            "Pipeline processing requires LOCAL or DOCKER mode.",
+        });
+      }
+
+      // -------------------------------------
+      // Allows the backend pipeline to reuse
+      // the DS1 API endpoints already written
+      // by DS1.
+      // -------------------------------------
+      const internalPostJson =
+        async <T>(
+          route: string,
+          body: unknown
+        ): Promise<T> => {
+          return fetchJson(
+            `http://127.0.0.1:${PORT}${route}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type":
+                  "application/json"
+              },
+              body: JSON.stringify(body)
+            },
+            90000
+          ) as Promise<T>;
+        };
+
+      // -------------------------------------
+      // DS1 → DS2 pipeline
+      // -------------------------------------
+      const shipmentCase =
+        await processEmailPipeline(
+          email,
+          internalPostJson
+        );
+
+      // -------------------------------------
+      // Persist case
+      // -------------------------------------
+      caseRepository.save(
+        shipmentCase
+      );
+
+      // -------------------------------------
+      // CS1 orchestration audit events
+      // -------------------------------------
+      const events =
+        orchestrateCase(
+          shipmentCase
+        );
+
+      await auditRepository.append(
+        events
+      );
+
+      return res.json({
+        success: true,
+        case: shipmentCase,
+        events,
+      });
+    } catch (error: any) {
+      console.error(
+        "Pipeline processing failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          error:
+            error.message ||
+            "Pipeline processing failed",
+        });
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // CS1 orchestration and revision workflow
