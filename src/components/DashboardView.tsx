@@ -32,16 +32,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [briefingGenerating, setBriefingGenerating] = useState(false);
   const [customBriefing, setCustomBriefing] = useState<string | null>(null);
 
-  // Filter cases based on current date filter if necessary (all synthetic demo data is anchored on current operational dates)
-  const totalEmails = cases.length;
-  const verifiedDocs = cases.filter((c) => c.category === "BL_COMPARISON").length;
-  const mismatches = cases.filter((c) => c.verificationStatus === "MISMATCH").length;
-  const humanReviews = cases.filter((c) => c.verificationStatus === "NEEDS_REVIEW").length;
-  const autoVerified = cases.filter((c) => c.verificationStatus === "OK").length;
+ // Filter cases based on the selected date filter
+  const filteredCases = cases.filter((c) => {
+    if (dateFilter.preset === "TODAY") {
+      return c.receivedDate.startsWith("2026-09-19");
+    } else if (dateFilter.preset === "YESTERDAY") {
+      return c.receivedDate.startsWith("2026-09-18");
+    } else if (dateFilter.preset === "LAST_7_DAYS" || dateFilter.preset === "THIS_MONTH") {
+      return true; // includes all 12 demo emails
+    }
+    return true;
+  });
+
+  const totalEmails = filteredCases.length;
+  const verifiedDocs = filteredCases.filter((c) => c.category === "BL_COMPARISON").length;
+  const mismatches = filteredCases.filter((c) => c.verificationStatus === "MISMATCH").length;
+  const humanReviews = filteredCases.filter((c) => c.verificationStatus === "NEEDS_REVIEW").length;
+  const autoVerified = filteredCases.filter((c) => c.verificationStatus === "OK").length;
   const autoRate = verifiedDocs > 0 ? Math.round((autoVerified / verifiedDocs) * 100) : 0;
 
   // High priority cases needing attention
-  const attentionCases = cases
+  const attentionCases = filteredCases
     .filter((c) => c.verificationStatus === "MISMATCH" || c.verificationStatus === "NEEDS_REVIEW" || c.hasRevision)
     .sort((a, b) => b.priorityScore - a.priorityScore)
     .slice(0, 4);

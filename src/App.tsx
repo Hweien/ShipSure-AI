@@ -44,11 +44,38 @@ export default function App() {
     refreshData();
   }, []);
 
-  const humanReviewCount = cases.filter(
+  // Synchronize Global Date Filter across all data
+  // Synchronize Global Date Filter across all data
+  const filteredCases = cases.filter((c) => {
+    if (dateFilter.preset === "TODAY") {
+      return c.receivedDate.startsWith("2026-09-19");
+    } else if (dateFilter.preset === "YESTERDAY") {
+      return c.receivedDate.startsWith("2026-09-18");
+    } else if (dateFilter.preset === "CUSTOM" && dateFilter.startDate && dateFilter.endDate) {
+      const itemDate = c.receivedDate.split("T")[0];
+      return itemDate >= dateFilter.startDate && itemDate <= dateFilter.endDate;
+    }
+    // "LAST_7_DAYS", "LAST_30_DAYS", "THIS_MONTH" include all cases in our demo set
+    return true;
+  });
+
+  const filteredEmails = emails.filter((e) => {
+    if (dateFilter.preset === "TODAY") {
+      return e.date.startsWith("2026-09-19");
+    } else if (dateFilter.preset === "YESTERDAY") {
+      return e.date.startsWith("2026-09-18");
+    } else if (dateFilter.preset === "CUSTOM" && dateFilter.startDate && dateFilter.endDate) {
+      const itemDate = e.date.split("T")[0];
+      return itemDate >= dateFilter.startDate && itemDate <= dateFilter.endDate;
+    }
+    return true;
+  });
+
+  const humanReviewCount = filteredCases.filter(
     (c) => c.verificationStatus === "NEEDS_REVIEW" || (c.hasRevision && c.revisionComparison?.overallOutcome === "NEEDS_HUMAN_REVIEW")
   ).length;
 
-  const mismatchCount = cases.filter((c) => c.verificationStatus === "MISMATCH").length;
+  const mismatchCount = filteredCases.filter((c) => c.verificationStatus === "MISMATCH").length;
 
   const selectedCase = cases.find((c) => c.id === selectedCaseId);
 
@@ -59,8 +86,7 @@ export default function App() {
   };
 
   const handleStartPriority = () => {
-    // Find highest priority mismatch or review case
-    const priorityCase = [...cases]
+    const priorityCase = [...filteredCases]
       .filter((c) => c.verificationStatus === "MISMATCH" || c.verificationStatus === "NEEDS_REVIEW")
       .sort((a, b) => b.priorityScore - a.priorityScore)[0];
 
@@ -107,13 +133,38 @@ export default function App() {
   };
 
   const handleSearchInterpreted = (interpreted: InterpretedSearchQuery | null) => {
-    if (!interpreted) return;
+    if (!interpreted) {
+      setInitialFilterField(undefined);
+      return;
+    }
+
+    if (interpreted.targetCaseId) {
+      const match = cases.find(
+        (c) =>
+          c.id.toLowerCase() === interpreted.targetCaseId?.toLowerCase() ||
+          c.shipmentReference.toLowerCase().includes(interpreted.targetCaseId?.toLowerCase() || "")
+      );
+      if (match) {
+        setSelectedCaseId(match.id);
+        setActiveTab("verification");
+        return;
+      }
+    }
+
+    if (interpreted.field) {
+      setInitialFilterField(interpreted.field);
+      setActiveTab("shipments");
+      return;
+    }
+
     if (interpreted.targetTab) {
       setActiveTab(interpreted.targetTab);
+      return;
     }
-    if (interpreted.targetCaseId) {
-      setSelectedCaseId(interpreted.targetCaseId);
-      setActiveTab("verification");
+
+    if (interpreted.status === "MISMATCH" || interpreted.status === "NEEDS_REVIEW") {
+      setActiveTab("shipments");
+      return;
     }
   };
 
@@ -133,7 +184,6 @@ export default function App() {
         onStartPriorityCase={handleStartPriority}
         onSearch={handleSearchInterpreted}
         onNavigate={(tab) => setActiveTab(tab)}
-        onOpenVisionOcr={() => setVisionOcrOpen(true)}
       />
 
       {/* Main App Layout */}
@@ -156,7 +206,7 @@ export default function App() {
         <main className="flex-1 overflow-y-auto bg-slate-50 relative">
           {activeTab === "dashboard" && (
             <DashboardView
-              cases={cases}
+              cases={filteredCases}
               dateFilter={dateFilter}
               onNavigate={(tab, caseId) => {
                 if (caseId) {
@@ -172,8 +222,8 @@ export default function App() {
 
           {activeTab === "inbox" && (
             <InboxView
-              emails={emails}
-              cases={cases}
+              emails={filteredEmails}
+              cases={filteredCases}
               onSelectCase={handleOpenCase}
               onAskCopilotAboutEmail={handleAskCopilotAboutEmail}
             />
@@ -181,7 +231,7 @@ export default function App() {
 
           {activeTab === "shipments" && (
             <ShipmentsView
-              cases={cases}
+              cases={filteredCases}
               onSelectCase={handleOpenCase}
               onOpenRevision={(caseId) => {
                 setSelectedCaseId(caseId);
@@ -206,7 +256,7 @@ export default function App() {
 
           {activeTab === "human-review" && (
             <HumanReviewView
-              cases={cases}
+              cases={filteredCases}
               onOpenCase={handleOpenCase}
               onRefreshCases={refreshData}
               onOpenVisionOcr={(caseId) => {
@@ -218,9 +268,12 @@ export default function App() {
 
           {activeTab === "revision" && (
             <RevisionView
-              cases={cases}
+              cases={filteredCases}
               onOpenCase={handleOpenCase}
-              onNavigateToHumanReview={() => setActiveTab("human-review")}
+              onNavigateToHumanReview={(caseId) => {
+                setSelectedCaseId(caseId);
+                setActiveTab("human-review");
+              }}
             />
           )}
 
@@ -228,14 +281,14 @@ export default function App() {
 
           {activeTab === "analytics" && (
             <AnalyticsView
-              cases={cases}
+              cases={filteredCases}
               onSelectFieldDrillDown={handleFieldDrillDown}
             />
           )}
 
           {activeTab === "agents" && (
             <AgentActivityView
-              cases={cases}
+              cases={filteredCases}
               onOpenCase={handleOpenCase}
             />
           )}
@@ -245,7 +298,7 @@ export default function App() {
           {activeTab === "settings" && <SettingsView />}
         </main>
 
-        {/* Floating Quick Launcher Trigger (when chatbox is closed) */}
+        {/* Floating Quick Launcher Trigger */}
         {!copilotOpen && (
           <button
             id="btn-floating-multi-agent"
@@ -271,7 +324,7 @@ export default function App() {
         <MultiAgentChatbox
           isOpen={copilotOpen}
           onClose={() => setCopilotOpen(false)}
-          cases={cases}
+          cases={filteredCases}
           activeCase={selectedCase}
           currentDateFilter={dateFilter}
           onNavigateToCase={(caseId) => {
@@ -287,7 +340,7 @@ export default function App() {
           onNavigateToShipments={() => setActiveTab("shipments")}
         />
 
-        {/* AI Multimodal Vision & OCR Reader Modal for Hard-to-read Scans, Messy PDFs, and Tables */}
+        {/* AI Multimodal Vision & OCR Reader Modal */}
         <VisionOcrModal
           isOpen={visionOcrOpen}
           onClose={() => setVisionOcrOpen(false)}
@@ -295,7 +348,7 @@ export default function App() {
           onApplyExtractedFields={(fields) => {
             if (selectedCase) {
               datasetProvider.updateHumanReview(selectedCase.id, {
-                reviewer: "AI Vision OCR Engine (Gemini 3.8 Flash)",
+                reviewer: "AI Vision OCR Engine (Gemini 3.6 Flash)",
                 approvedStatus: "OK",
                 comments: "Updated fields directly from Multimodal Vision model OCR extraction pass.",
                 manualOverrides: {
@@ -308,7 +361,7 @@ export default function App() {
               refreshData();
             }
           }}
-          onSendToReviewWithCandidates={(caseId, candidates) => {
+          onSendToReviewWithCandidates={(caseId) => {
             setSelectedCaseId(caseId);
             setActiveTab("human-review");
           }}

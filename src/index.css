@@ -1,1 +1,32 @@
 @import "tailwindcss";
+
+/* =========================================================
+   Global Colorblind / High-Contrast Mode (WCAG AAA)
+   ========================================================= */
+body.colorblind-mode {
+  /* Increases overall contrast and sharpens text readability */
+  filter: contrast(110%);
+}
+
+/* In Colorblind Mode, every status gets an unmistakable tactile border */
+body.colorblind-mode .bg-red-100,
+body.colorblind-mode .bg-red-50,
+body.colorblind-mode .bg-rose-50 {
+  border: 2px solid #b91c1c !important;
+  text-decoration: underline decoration-red-600 decoration-2 !important;
+}
+
+body.colorblind-mode .bg-emerald-100,
+body.colorblind-mode .bg-emerald-50 {
+  border: 2px solid #047857 !important;
+}
+
+body.colorblind-mode .bg-amber-100,
+body.colorblind-mode .bg-amber-50 {
+  border: 2px dashed #b45309 !important;
+}
+
+body.colorblind-mode .bg-blue-100,
+body.colorblind-mode .bg-blue-50 {
+  border: 2px solid #1d4ed8 !important;
+}

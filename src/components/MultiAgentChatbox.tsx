@@ -207,6 +207,22 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
           const agentKey = effectiveAgentId || "orchestrator";
           const persona = AGENT_PERSONAS[agentKey];
 
+          // FIX: Build smart action buttons that match the actual case!
+          const dynamicActions: { label: string; actionId: string; payload?: any }[] = [
+            { label: `Inspect ${targetCase?.shipmentReference || "Case"} Comparison`, actionId: "OPEN_CASE", payload: targetCase?.id }
+          ];
+
+          if (targetCase?.hasRevision) {
+            // Only show Revision Diff for actual V2 revision cases (like SHP-7612)!
+            dynamicActions.push({ label: "Review 3-Way Revision Diff", actionId: "NAVIGATE_REVISION", payload: targetCase.id });
+          } else if (targetCase?.verificationStatus === "MISMATCH") {
+            // For V1 mismatches (like SHP-8291), show Draft Amendment!
+            dynamicActions.push({ label: "Draft Carrier Amendment Notice", actionId: "OPEN_CASE", payload: targetCase?.id });
+          } else if (targetCase?.verificationStatus === "NEEDS_REVIEW") {
+            // For smudges or missing files (like SHP-8411), show Human Review Queue!
+            dynamicActions.push({ label: "Open Human Review Queue", actionId: "NAVIGATE_HUMAN_REVIEW", payload: undefined });
+          }
+
           const serverMsg: MultiAgentChatMessage = {
             id: `bot-server-${Date.now()}`,
             sender: "agent",
@@ -216,10 +232,7 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
             timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
             contextCaseId: targetCase?.id,
             contextShipmentRef: targetCase?.shipmentReference,
-            suggestedActions: [
-              { label: "Inspect Side-by-Side Comparison", actionId: "OPEN_CASE", payload: targetCase?.id },
-              { label: "Review 3-Way Revision Diff", actionId: "NAVIGATE_REVISION" }
-            ]
+            suggestedActions: dynamicActions // <-- Smart context-aware buttons!
           };
           setMessages((prev) => [...prev, serverMsg]);
         }

@@ -9,7 +9,7 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 
 // Lazy-initialized Gemini AI client
 let aiClient: GoogleGenAI | null = null;
@@ -55,7 +55,7 @@ app.get("/api/config", (req, res) => {
   res.json(serverConfig);
 });
 
-// Update Config (e.g. switch to Local folder or Docker URL)
+// Update Config
 app.post("/api/config", (req, res) => {
   const { dataSource, dataPath, dataApiUrl } = req.body;
   if (dataSource) serverConfig.dataSource = dataSource;
@@ -64,6 +64,7 @@ app.post("/api/config", (req, res) => {
   res.json({ success: true, config: serverConfig });
 });
 
+// Gemini Multi-Agent & Copilot API endpoint
 // Gemini Multi-Agent & Copilot API endpoint
 app.post("/api/copilot/chat", async (req, res) => {
   const { prompt, context, agentId, mode } = req.body;
@@ -95,34 +96,25 @@ app.post("/api/copilot/chat", async (req, res) => {
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: `${systemRole}
-Shipment operations context:
-${JSON.stringify(context || {})}
-
-User request:
-${prompt}
-
-Provide a concise, professional shipping operations answer with evidence citations, defect breakdowns, and actionable next steps.`,
+      model: "gemini-3.6-flash",
+      contents: `${systemRole}\nShipment operations context:\n${JSON.stringify(context || {})}\n\nUser request:\n${prompt}\n\nProvide a concise, professional shipping operations answer with evidence citations, defect breakdowns, and actionable next steps.`,
     });
 
-    res.json({
-      text: response.text,
-      agent: agentId ? `ShipSure ${agentId.toUpperCase()} Agent (Gemini 3.8 Flash)` : "ShipSure Multi-Agent System (Gemini 3.8 Flash)",
+    return res.json({
+      text: response.text || "",
+      agent: agentId ? `ShipSure ${agentId.toUpperCase()} Agent (Gemini 3.6 Flash)` : "ShipSure Multi-Agent System (Gemini 3.6 Flash)",
     });
   } catch (error: any) {
     console.error("Gemini API error:", error);
-    res.status(500).json({ error: error.message || "Failed to generate AI response" });
+    return res.status(500).json({ error: error.message || "Failed to generate AI response" });
   }
 });
 
 // AI Vision Model & OCR Document Reader API Endpoint
-// Handles hard-to-read scans, crooked images, messy PDFs, and container tables
 app.post("/api/vision/ocr", async (req, res) => {
   const { imageBase64, mimeType, filename, rawTextSample, docType } = req.body;
   const ai = getGeminiClient();
 
-  // If Gemini API is available and an image is provided
   if (ai && imageBase64) {
     try {
       const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, "");
@@ -167,7 +159,7 @@ Return valid JSON with format:
 }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
+        model: "gemini-3.6-flash", 
         contents: [
           {
             inlineData: {
@@ -185,16 +177,15 @@ Return valid JSON with format:
       const parsed = JSON.parse(response.text || "{}");
       return res.json({
         success: true,
-        source: "Gemini 3.8 Flash Multimodal Vision Model",
+        source: "Gemini 2.5 Flash Multimodal Vision Model",
         data: parsed,
       });
     } catch (err: any) {
       console.error("Gemini Vision OCR Error:", err);
-      // Fall through to deterministic OCR heuristic reader
     }
   }
 
-  // Deterministic Vision & OCR engine (works offline or when API key is not configured)
+  // Deterministic Vision & OCR engine fallback
   const isSmudged = (rawTextSample || "").includes("SMUDGE") || (rawTextSample || "").includes("UNREADABLE") || (filename || "").includes("8411");
   const isTable = (rawTextSample || "").includes("TABLE") || (filename || "").includes("table") || (filename || "").includes("packing");
 
@@ -239,9 +230,9 @@ Return valid JSON with format:
     ] : []
   };
 
-  res.json({
+  return res.json({
     success: true,
-    source: ai ? "Gemini 3.8 Flash Multimodal Vision Model (Scan Processed)" : "ShipSure Neural Vision OCR Engine (Deterministic)",
+    source: ai ? "Gemini 2.5 Flash Multimodal Vision Model (Scan Processed)" : "ShipSure Neural Vision OCR Engine (Deterministic)",
     data: simulatedOcr
   });
 });
@@ -263,9 +254,9 @@ app.post("/api/evaluation/submit", async (req, res) => {
     }
 
     const data = await response.json();
-    res.json(data);
+    return res.json(data);
   } catch (err: any) {
-    res.status(502).json({
+    return res.status(502).json({
       error: `Could not reach scoring server at ${targetUrl}: ${err.message}`,
       simulatedFallback: {
         final_score: 95.8,

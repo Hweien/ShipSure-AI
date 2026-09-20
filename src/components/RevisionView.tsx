@@ -14,7 +14,7 @@ import { ShipmentCase } from "../types";
 interface RevisionViewProps {
   cases: ShipmentCase[];
   onOpenCase: (caseId: string) => void;
-  onNavigateToHumanReview: () => void;
+  onNavigateToHumanReview: (caseId: string) => void; 
 }
 
 export const RevisionView: React.FC<RevisionViewProps> = ({
@@ -73,7 +73,7 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                     View SI vs BL
                   </button>
                   <button
-                    onClick={onNavigateToHumanReview}
+                    onClick={() => onNavigateToHumanReview(c.id)} // <-- pass c.id
                     className="text-xs bg-purple-600 hover:bg-purple-700 text-white font-semibold px-3.5 py-1.5 rounded-lg transition cursor-pointer"
                   >
                     Send to Review Desk
