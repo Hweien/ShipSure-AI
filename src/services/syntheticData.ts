@@ -280,49 +280,99 @@ Gross Weight: 18,200 KG [CORRECTED]`,
       humanReviewed: false,
       revisionComparison: {
         caseId: "CASE-7612",
+
         originalSi: {
           documentType: "SI",
           extractionConfidence: "HIGH",
           fields: {
+            shipper: { raw: null },
+            consignee: {
+              raw: "PACIFICINDUSTRIAL TRADING LTD",
+              normalized: "PACIFIC INDUSTRIAL TRADING LTD"
+            },
+            notify_party: { raw: null },
+            port_of_loading: { raw: null },
+            port_of_discharge: { raw: null },
             container_count: { raw: "3", normalized: 3 },
-            gross_weight_kg: { raw: "18,200 KG", normalized: 18200 },
-            consignee: { raw: "PACIFIC INDUSTRIAL TRADING LTD", normalized: "PACIFIC INDUSTRIAL TRADING LTD" }
+            gross_weight_kg: {
+              raw: "18,200 KG",
+              normalized: 18200
+            }
           }
         },
-        blV1: {
-          documentType: "BL",
-          extractionConfidence: "HIGH",
-          fields: {
-            container_count: { raw: "4", normalized: 4 },
-            gross_weight_kg: { raw: "19,500 KG", normalized: 19500 },
-            consignee: { raw: "PACIFIC INDUSTRIAL TRADING LTD", normalized: "PACIFIC INDUSTRIAL TRADING LTD" }
+
+      blV1: {
+        documentType: "BL",
+        extractionConfidence: "HIGH",
+        fields: {
+          shipper: { raw: null },
+          consignee: {
+            raw: "PACIFIC INDUSTRIAL TRADING LTD",
+            normalized: "PACIFIC INDUSTRIAL TRADING LTD"
+          },
+          notify_party: { raw: null },
+          port_of_loading: { raw: null },
+          port_of_discharge: { raw: null },
+          container_count: { raw: "4", normalized: 4 },
+          gross_weight_kg: {
+            raw: "19,500 KG",
+            normalized: 19500
           }
-        },
-        blV2: {
-          documentType: "BL",
-          extractionConfidence: "HIGH",
-          fields: {
-            container_count: { raw: "3", normalized: 3 },
-            gross_weight_kg: { raw: "18,200 KG", normalized: 18200 },
-            consignee: { raw: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD", normalized: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD" }
-          }
-        },
-        correctedFields: [
-          { field: "container_count", siValue: 3, v1Value: 4, v2Value: 3, status: "CORRECTED" },
-          { field: "gross_weight_kg", siValue: 18200, v1Value: 19500, v2Value: 18200, status: "CORRECTED" }
-        ],
-        unexpectedChanges: [
-          {
-            field: "consignee",
-            siValue: "PACIFIC INDUSTRIAL TRADING LTD",
-            v1Value: "PACIFIC INDUSTRIAL TRADING LTD",
-            v2Value: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD",
-            status: "UNEXPECTED_CHANGE",
-            reason: "The requested corrections (count & weight) were resolved, but Consignee was unexpectedly changed from 'PACIFIC INDUSTRIAL TRADING LTD' to 'PACIFIC INDUSTRIAL LOGISTICS GROUP LTD'."
-          }
-        ],
-        overallOutcome: "NEEDS_HUMAN_REVIEW"
+        }
       },
+
+      blV2: {
+        documentType: "BL",
+        extractionConfidence: "HIGH",
+        fields: {
+          shipper: { raw: null },
+          consignee: {
+            raw: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD",
+            normalized: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD"
+          },
+          notify_party: { raw: null },
+          port_of_loading: { raw: null },
+          port_of_discharge: { raw: null },
+          container_count: { raw: "3", normalized: 3 },
+          gross_weight_kg: {
+            raw: "18,200 KG",
+            normalized: 18200
+          }
+        }
+      },
+
+      correctedFields: [
+        {
+          field: "container_count",
+          siValue: 3,
+          v1Value: 4,
+          v2Value: 3,
+          status: "CORRECTED"
+        },
+        {
+          field: "gross_weight_kg",
+          siValue: 18200,
+          v1Value: 19500,
+          v2Value: 18200,
+          status: "CORRECTED"
+        }
+      ],
+
+      unexpectedChanges: [
+        {
+          field: "consignee",
+          siValue: "PACIFIC INDUSTRIAL TRADING LTD",
+          v1Value: "PACIFIC INDUSTRIAL TRADING LTD",
+          v2Value: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD",
+          status: "UNEXPECTED_CHANGE",
+          reason:
+            "The requested corrections (count & weight) were resolved, but Consignee was unexpectedly changed from 'PACIFIC INDUSTRIAL TRADING LTD' to 'PACIFIC INDUSTRIAL LOGISTICS GROUP LTD'."
+        }
+      ],
+
+      overallOutcome: "NEEDS_HUMAN_REVIEW"
+      },
+
       fieldComparisons: [
         { field: "shipper", label: "Shipper", status: "EXACT_MATCH", siEvidence: { documentType: "SI", originalValue: "ASAHI PRECISION INSTRUMENTS CO LTD", normalizedValue: "ASAHI PRECISION INSTRUMENTS CO LTD", confidence: "HIGH" }, blEvidence: { documentType: "BL", originalValue: "ASAHI PRECISION INSTRUMENTS CO LTD", normalizedValue: "ASAHI PRECISION INSTRUMENTS CO LTD", confidence: "HIGH" } },
         { field: "consignee", label: "Consignee", status: "MISMATCH", siEvidence: { documentType: "SI", originalValue: "PACIFIC INDUSTRIAL TRADING LTD", normalizedValue: "PACIFIC INDUSTRIAL TRADING LTD", confidence: "HIGH" }, blEvidence: { documentType: "BL", originalValue: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD", normalizedValue: "PACIFIC INDUSTRIAL LOGISTICS GROUP LTD", confidence: "HIGH" }, notes: "Unexpected change on V2!" },
@@ -332,11 +382,13 @@ Gross Weight: 18,200 KG [CORRECTED]`,
         { field: "container_count", label: "Container Count", status: "EXACT_MATCH", siEvidence: { documentType: "SI", originalValue: "3", normalizedValue: 3, confidence: "HIGH" }, blEvidence: { documentType: "BL", originalValue: "3", normalizedValue: 3, confidence: "HIGH" }, notes: "Fixed in V2" },
         { field: "gross_weight_kg", label: "Gross Weight (KG)", status: "EXACT_MATCH", siEvidence: { documentType: "SI", originalValue: "18,200 KG", normalizedValue: 18200, confidence: "HIGH" }, blEvidence: { documentType: "BL", originalValue: "18,200 KG", normalizedValue: 18200, confidence: "HIGH" }, notes: "Fixed in V2" }
       ],
+
       timeline: [
         { id: "T-30", timestamp: "06:30:01", agent: "Inbox Agent", action: "Email Ingestion", summary: "Identified revised BL V2 for previous case SHP-7612", status: "success" },
         { id: "T-31", timestamp: "06:30:03", agent: "Revision Agent", action: "3-Way Diff", summary: "Confirmed 2 corrections, flagged 1 unexpected Consignee alteration", status: "warning" },
         { id: "T-32", timestamp: "06:30:05", agent: "Validation Agent", action: "Human Escalation", summary: "Escalated unexpected modification to Human Review queue", status: "warning" }
       ],
+
       decisions: [
         {
           id: "DEC-301",
@@ -354,7 +406,6 @@ Gross Weight: 18,200 KG [CORRECTED]`,
       ]
     }
   },
-
   // 4. Missing Attachment case (SHP-8392 -> NEEDS_REVIEW / missing_attachment)
   {
     email: {

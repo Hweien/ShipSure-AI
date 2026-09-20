@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { DashboardView } from "./components/DashboardView";
@@ -25,6 +25,7 @@ import { ComparisonField, EmailRecord, GlobalDateFilter, ShipmentCase } from "./
 import { InterpretedSearchQuery } from "./services/agents";
 
 export default function App() {
+  const hasTestedProcessEmail = useRef(false);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<GlobalDateFilter>({ preset: "TODAY" });
