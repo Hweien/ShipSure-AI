@@ -156,6 +156,26 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     { name: "Human Review", value: reviewCases, color: "#f59e0b" },
   ];
 
+  const automaticallyVerifiedCases = cases.filter(
+    (c) =>
+      c.verificationStatus === "OK" ||
+      c.verificationStatus === "MISMATCH"
+  ).length;
+
+  const totalDiscrepancies = cases.reduce(
+    (total, c) => total + c.defectFields.length,
+    0
+  );
+
+  const humanReviewCases = cases.filter(
+    (c) => c.verificationStatus === "NEEDS_REVIEW"
+  ).length;
+
+  const automatedVerificationRate =
+    totalCases > 0
+      ? (automaticallyVerifiedCases / totalCases) * 100
+      : 0;
+
   return (
     <div id="analytics-view" className="p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header */}
@@ -172,59 +192,66 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       </div>
 
       {/* Business Impact / ROI Cards */}
+      {/* Operational Impact */}
       <div className="bg-linear-to-r from-slate-900 to-blue-950 text-white rounded-xl p-5 shadow-sm border border-slate-800">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-sm font-bold text-white">Estimated Business Impact</h2>
-            <p className="text-[11px] text-slate-400">
-              Illustrative estimates based on stated operational assumptions
-            </p>
-          </div>
-          <button
-            onClick={() => setShowAssumptions(!showAssumptions)}
-            className="text-xs text-blue-300 hover:text-blue-100 flex items-center gap-1 font-medium underline"
-          >
-            <Info className="w-3.5 h-3.5" />
-            {showAssumptions ? "Hide Assumptions" : "View Transparent Assumptions"}
-          </button>
+        <div className="mb-4">
+          <h2 className="text-sm font-bold text-white">
+            Operational Impact
+          </h2>
+          <p className="text-[11px] text-slate-400">
+            Calculated directly from verified shipment cases
+          </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-            <div className="text-[11px] text-blue-200 font-medium">Estimated Carrier Fine Avoidance</div>
-            <div className="text-2xl font-bold text-white mt-1">$84,000</div>
-            <p className="text-[10px] text-slate-400 mt-0.5">
-              Illustrative estimate based on assumed avoided penalties
-            </p>
+
+        {/* Card 1 */}
+        <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+          <div className="text-[11px] text-blue-200 font-medium">
+            Cases Automatically Verified
           </div>
 
-          <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-            <div className="text-[11px] text-blue-200 font-medium">Clerical Labor Saved</div>
-            <div className="text-2xl font-bold text-emerald-400 mt-1">412 Hours</div>
-            <p className="text-[10px] text-slate-400 mt-0.5">
-              Illustrative estimate based on assumed review-time reduction
-            </p>
+          <div className="text-2xl font-bold text-white mt-1">
+            {automaticallyVerifiedCases}
           </div>
 
-          <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-            <div className="text-[11px] text-blue-200 font-medium">Defect Containment Rate</div>
-            <div className="text-2xl font-bold text-blue-400 mt-1">100%</div>
-            <p className="text-[10px] text-slate-400 mt-0.5">
-              Illustrative target based on automated verification
-            </p>
-          </div>
+          <p className="text-[10px] text-slate-400 mt-0.5">
+            {automatedVerificationRate.toFixed(1)}% of total cases
+          </p>
         </div>
 
-        {showAssumptions && (
-          <div className="mt-4 pt-4 border-t border-white/10 text-xs text-slate-300 space-y-1 bg-white/5 p-3 rounded-lg">
-            <div className="font-bold text-white">Illustrative Calculation Assumptions:</div>
-            <div>• Manual baseline review time: 5.0 minutes per SI-BL document pair.</div>
-            <div>• ShipSure AI assisted verification time: 1.5 minutes per case (including human oversight).</div>
-            <div>• Operations staff cost basis: $45.00 / hour.</div>
-            <div>• Average carrier amendment charge / delayed manifest penalty: $500 - $3,500 per bill of lading.</div>
+        {/* Card 2 */}
+        <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+          <div className="text-[11px] text-blue-200 font-medium">
+            Discrepancies Detected
           </div>
-        )}
+
+          <div className="text-2xl font-bold text-emerald-400 mt-1">
+            {totalDiscrepancies}
+          </div>
+
+          <p className="text-[10px] text-slate-400 mt-0.5">
+            Across all verified shipment cases
+          </p>
+        </div>
+
+        {/* Card 3 */}
+        <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+          <div className="text-[11px] text-blue-200 font-medium">
+            Human Review Required
+          </div>
+
+          <div className="text-2xl font-bold text-blue-400 mt-1">
+            {humanReviewCases}
+          </div>
+
+          <p className="text-[10px] text-slate-400 mt-0.5">
+            Cases requiring manual investigation
+          </p>
+        </div>
+
       </div>
+    </div>
 
       {/* Verification Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
@@ -321,7 +348,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           </ResponsiveContainer>
         </div>
       </div>
-      
+
       {/* Field Comparison Status */}
       <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
         <div className="mb-4">
