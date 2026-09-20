@@ -193,7 +193,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
                     )}
                   </td>
                   <td className="py-3.5 px-4 text-slate-500">
-                    {new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {e.date? new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }): "No date"}
                   </td>
                   <td className="py-3.5 px-4 text-right">
                     {category === "BL_COMPARISON" && relatedCase && (

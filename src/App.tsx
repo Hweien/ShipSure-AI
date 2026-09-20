@@ -1,3 +1,8 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import React, { useState, useEffect, useRef } from "react";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
@@ -20,7 +25,9 @@ import { datasetProvider } from "./services/datasetProvider";
 import { ComparisonField, EmailRecord, GlobalDateFilter, ShipmentCase } from "./types";
 import { InterpretedSearchQuery } from "./services/agents";
 
+
 export default function App() {
+  const hasTestedProcessEmail = useRef(false);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState<GlobalDateFilter>({ preset: "TODAY" });
@@ -61,13 +68,17 @@ export default function App() {
     return true;
   });
 
+  // Replace e.date with the correct property from your EmailRecord type
   const filteredEmails = emails.filter((e) => {
+    // Use optional chaining (?.) and provide a default empty string ("")
+    const dateStr = e.date ?? ""; 
+
     if (dateFilter.preset === "TODAY") {
-      return e.date.startsWith("2026-09-19");
+      return dateStr.startsWith("2026-09-19");
     } else if (dateFilter.preset === "YESTERDAY") {
-      return e.date.startsWith("2026-09-18");
+      return dateStr.startsWith("2026-09-18");
     } else if (dateFilter.preset === "CUSTOM" && dateFilter.startDate && dateFilter.endDate) {
-      const itemDate = e.date.split("T")[0];
+      const itemDate = dateStr.split("T")[0];
       return itemDate >= dateFilter.startDate && itemDate <= dateFilter.endDate;
     }
     return true;
@@ -288,7 +299,7 @@ export default function App() {
               />
             )}
 
-            {activeTab === "watchdog" && <WatchdogView />}
+            {activeTab === "watchdog" && <WatchdogView cases={filteredCases} />}
 
             {activeTab === "analytics" && (
               <AnalyticsView
