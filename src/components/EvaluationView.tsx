@@ -1,15 +1,13 @@
-import React, { useState } from "react";
-import { 
-  FileSpreadsheet, 
-  Download, 
-  Send, 
-  CheckCircle2, 
-  AlertTriangle, 
-  RefreshCw, 
-  Copy, 
+import React, { useState, useEffect } from "react";
+import {
+  FileSpreadsheet,
+  Download,
+  Send,
+  CheckCircle2,
+  RefreshCw,
+  Copy,
   Check,
-  Server,
-  Layers
+  Server
 } from "lucide-react";
 import { datasetProvider } from "../services/datasetProvider";
 
@@ -18,13 +16,22 @@ export const EvaluationView: React.FC = () => {
     return JSON.stringify(datasetProvider.generateEvaluationSubmission(), null, 2);
   });
   const [copied, setCopied] = useState(false);
+  const [regenerated, setRegenerated] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [scoringResult, setScoringResult] = useState<any>(null);
   const [dockerUrl, setDockerUrl] = useState("http://localhost:8080");
 
+  // Auto-sync on view open
+  useEffect(() => {
+    setSubmissionJson(JSON.stringify(datasetProvider.generateEvaluationSubmission(), null, 2));
+  }, []);
+
+  // ✅ Visual confirmation when clicked
   const handleRegenerate = () => {
     const fresh = JSON.stringify(datasetProvider.generateEvaluationSubmission(), null, 2);
     setSubmissionJson(fresh);
+    setRegenerated(true);
+    setTimeout(() => setRegenerated(false), 1500);
   };
 
   const handleCopy = () => {
@@ -94,12 +101,26 @@ export const EvaluationView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* ✅ Regenerate Button with Live Feedback */}
           <button
             onClick={handleRegenerate}
-            className="flex items-center gap-1.5 text-xs bg-white border border-slate-200 hover:bg-slate-50 font-semibold px-3 py-2 rounded-lg transition cursor-pointer"
+            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg transition cursor-pointer border ${
+              regenerated
+                ? "bg-emerald-50 text-emerald-700 border-emerald-300"
+                : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+            }`}
           >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>Regenerate JSON</span>
+            {regenerated ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-600 animate-in zoom-in" />
+                <span>JSON Refreshed!</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
+                <span>Regenerate JSON</span>
+              </>
+            )}
           </button>
           <button
             onClick={handleDownload}
@@ -205,7 +226,7 @@ export const EvaluationView: React.FC = () => {
         )}
       </div>
 
-      {/* JSON Viewer and Inspector */}
+      {/* JSON Viewer and Inspector (Bright & Easy to Read) */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
         <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -224,7 +245,8 @@ export const EvaluationView: React.FC = () => {
           </button>
         </div>
 
-        <pre className="p-4 text-xs font-mono text-slate-800 bg-slate-900 text-slate-200 max-h-96 overflow-y-auto leading-relaxed">
+        {/* ✅ Fixed high-contrast text color */}
+        <pre className="p-4 text-xs font-mono bg-slate-950 text-emerald-300 max-h-96 overflow-y-auto leading-relaxed border-t border-slate-800 selection:bg-blue-600 selection:text-white">
           {submissionJson}
         </pre>
       </div>

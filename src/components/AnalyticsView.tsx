@@ -107,7 +107,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="bg-white/5 border border-white/10 rounded-lg p-4">
             <div className="text-[11px] text-blue-200 font-medium">Estimated Carrier Fine Avoidance</div>
-            <div className="text-2xl font-bold text-white mt-1">${(mismatchCount * 21000).toLocaleString()}</div>
+            <div className="text-2xl font-bold text-white mt-1">${(mismatchCount * 2500).toLocaleString()}</div>
             <p className="text-[10px] text-slate-400 mt-0.5">
               Prevented customs manifest penalties & vessel roll fees
             </p>
@@ -115,7 +115,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
           <div className="bg-white/5 border border-white/10 rounded-lg p-4">
             <div className="text-[11px] text-blue-200 font-medium">Clerical Labor Saved</div>
-            <div className="text-2xl font-bold text-emerald-400 mt-1">{cases.length * 35} Hours</div>
+            <div className="text-2xl font-bold text-emerald-400 mt-1">{((cases.length * 3.5) / 60).toFixed(1)} Hours</div>
             <p className="text-[10px] text-slate-400 mt-0.5">
               Reduced manual document checking from 5 min to 1.5 min per case
             </p>

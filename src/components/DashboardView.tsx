@@ -67,10 +67,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setBriefingGenerating(true);
     setTimeout(() => {
       setBriefingGenerating(false);
+      const topMismatch = attentionCases.find(c => c.verificationStatus === "MISMATCH");
+      const topReview = attentionCases.find(c => c.verificationStatus === "NEEDS_REVIEW" || c.hasRevision);
+      
       setCustomBriefing(
-        `Operational Briefing for ${dateFilter.preset}: Today our multi-agent pipeline processed ${totalEmails} incoming messages. ${verifiedDocs} document-check requests were evaluated. We caught ${mismatches} genuine carrier discrepancies before draft BL finalization. ${humanReviews} uncertain cases were escalated to Human Review without guessing. Priority focus: SHP-8291 container/weight defect and SHP-7612 unexpected consignee revision.`
+        `Operational Briefing: Evaluated ${verifiedDocs} document sets. Identified ${mismatches} carrier discrepancies and ${humanReviews} cases requiring human review. ` +
+        (topMismatch ? `Priority focus: ${topMismatch.shipmentReference}. ` : "All discrepancies handled. ") +
+        (topReview ? `Review pending on ${topReview.shipmentReference}.` : "Review queue clear.")
       );
-    }, 600);
+    }, 400);
   };
 
   return (

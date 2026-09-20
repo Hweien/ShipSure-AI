@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   ArrowLeft, 
   CheckCircle2, 
@@ -10,14 +10,11 @@ import {
   Copy, 
   Check, 
   FileText, 
-  ExternalLink,
-  ShieldCheck,
   ChevronRight,
   X,
   Camera
 } from "lucide-react";
-import { ComparisonField, FieldEvidence, ShipmentCase, SingleFieldComparison } from "../types";
-import { datasetProvider } from "../services/datasetProvider";
+import { ComparisonField, ShipmentCase, SingleFieldComparison } from "../types";
 
 interface VerificationViewProps {
   shipmentCase: ShipmentCase;
@@ -36,10 +33,22 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
 }) => {
   const [activeEvidence, setActiveEvidence] = useState<SingleFieldComparison | null>(null);
   const [showCorrectionModal, setShowCorrectionModal] = useState(false);
-  const [draftSubject, setDraftSubject] = useState(shipmentCase.draftResolution?.subject || `BL Amendment Required – Shipment ${shipmentCase.shipmentReference}`);
+  const [draftSubject, setDraftSubject] = useState(
+    shipmentCase.draftResolution?.subject || `BL Amendment Required – Shipment ${shipmentCase.shipmentReference}`
+  );
   const [draftBody, setDraftBody] = useState(shipmentCase.draftResolution?.body || "");
   const [copied, setCopied] = useState(false);
   const [draftApproved, setDraftApproved] = useState(shipmentCase.draftResolution?.status === "APPROVED");
+
+  // ✅ Keep draft email synchronized whenever a different shipment is selected
+  useEffect(() => {
+    setDraftSubject(
+      shipmentCase.draftResolution?.subject ||
+        `BL Amendment Required – Shipment ${shipmentCase.shipmentReference}`
+    );
+    setDraftBody(shipmentCase.draftResolution?.body || "");
+    setDraftApproved(shipmentCase.draftResolution?.status === "APPROVED");
+  }, [shipmentCase]);
 
   // Ensure all 7 mandatory fields exist in the rows
   const MANDATORY_KEYS: { key: ComparisonField; label: string }[] = [
@@ -202,8 +211,13 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
         </div>
       </div>
 
-      {/* Hard-to-Read Scan / Messy PDF Vision Alert */}
-      {(shipmentCase.reviewReason === "unreadable" || shipmentCase.fieldComparisons.some(f => f.blEvidence?.originalValue?.includes("smudge") || f.blEvidence?.originalValue?.includes("SMUDGE"))) && (
+      {/* Hard-to-Read Scan Vision Alert */}
+      {(shipmentCase.reviewReason === "unreadable" ||
+        shipmentCase.fieldComparisons.some(
+          (f) =>
+            f.blEvidence?.originalValue?.includes("smudge") ||
+            f.blEvidence?.originalValue?.includes("SMUDGE")
+        )) && (
         <div className="bg-gradient-to-r from-indigo-950 via-slate-900 to-indigo-900 text-white p-4 rounded-xl shadow-md border border-indigo-700/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shrink-0 shadow-xs">
@@ -235,23 +249,23 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
       )}
 
       {mismatches.length === 0 && reviewFields.length === 0 && (
-      <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-4 flex items-center justify-between shadow-xs">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold shrink-0">
-            <CheckCircle2 className="w-5 h-5" />
+        <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-4 flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold shrink-0">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-emerald-900">No Mismatch Detected</h3>
+              <p className="text-xs text-emerald-700 mt-0.5">
+                All 7 required fields match between the customer Shipping Instruction (SI) and draft Bill of Lading (BL).
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="text-sm font-bold text-emerald-900">No Mismatch Detected</h3>
-            <p className="text-xs text-emerald-700 mt-0.5">
-              All 7 required fields match between the customer Shipping Instruction (SI) and draft Bill of Lading (BL).
-            </p>
-          </div>
+          <span className="text-xs font-semibold px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-200">
+            7/7 Verified
+          </span>
         </div>
-        <span className="text-xs font-semibold px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-200">
-          7/7 Verified
-        </span>
-      </div>
-    )}
+      )}
 
       {/* Overview Stat Strip */}
       <div className="grid grid-cols-4 gap-3">
@@ -326,14 +340,14 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
               return (
                 <tr
                   key={item.field}
-                    className={`hover:bg-slate-50 transition border-b border-slate-100 ${
-                      isMismatch 
-                        ? "bg-red-50/30 border-l-4 border-l-red-600" 
-                        : isReview 
-                        ? "bg-amber-50/30 border-l-4 border-l-amber-500" 
-                        : "border-l-4 border-l-emerald-500"
-                    }`}
-                  >
+                  className={`hover:bg-slate-50 transition border-b border-slate-100 ${
+                    isMismatch 
+                      ? "bg-red-50/30 border-l-4 border-l-red-600" 
+                      : isReview 
+                      ? "bg-amber-50/30 border-l-4 border-l-amber-500" 
+                      : "border-l-4 border-l-emerald-500"
+                  }`}
+                >
                   <td className="py-3.5 px-4 font-semibold text-slate-900 align-top">
                     {item.label}
                   </td>

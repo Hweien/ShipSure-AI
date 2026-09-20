@@ -184,7 +184,7 @@ export default function App() {
       <div
         id="operations-workspace"
         ref={workspaceRef}
-        className="flex flex-col h-screen w-screen overflow-hidden bg-slate-100 text-slate-900 border-t border-slate-800"
+        className="flex flex-col h-screen w-full overflow-hidden bg-slate-100 text-slate-900 border-t border-slate-800"
       >
         {/* Top Application Header */}
         <Header
@@ -306,7 +306,8 @@ export default function App() {
 
             {activeTab === "evaluation" && <EvaluationView />}
 
-            {activeTab === "settings" && <SettingsView />}
+            {/* ✅ Passed onRefreshData={refreshData} */}
+            {activeTab === "settings" && <SettingsView onRefreshData={refreshData} />}
           </main>
 
           {/* Compact Floating Quick Launcher */}

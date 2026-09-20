@@ -120,32 +120,52 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
 
   // Handle Simulate Dispatching to Carrier
   const handleDispatchEmail = (msgId: string) => {
-    setDispatchedId(msgId);
-    setTimeout(() => setDispatchedId(null), 3500);
-  };
+  setDispatchedId(msgId);
+  if (activeCase) {
+    if (activeCase.draftResolution) {
+      activeCase.draftResolution.status = "APPROVED";
+    }
+    activeCase.timeline.unshift({
+      id: `T-DISP-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString(),
+      agent: "Resolution Agent",
+      action: "Carrier Amendment Dispatched",
+      summary: `Dispatched formal amendment notice to carrier for ${activeCase.shipmentReference}.`,
+      status: "success"
+    });
+  }
+  setTimeout(() => setDispatchedId(null), 3500);
+};
 
   // Execute Agent Action Buttons
-  const handleActionClick = (actionId: string, payload?: any) => {
-    if (actionId === "OPEN_CASE" && payload) {
-      onNavigateToCase(payload);
-    } else if (actionId === "INVESTIGATE_CASE" && payload) {
-      setSelectedCaseId(payload);
-      const targetCase = cases.find((c) => c.id === payload);
-      handleSendMessage(`Investigate case ${targetCase?.shipmentReference || payload} in depth and prepare required carrier actions`);
-    } else if (actionId === "NAVIGATE_REVISION") {
-      onNavigateToRevision(selectedCaseId);
-    } else if (actionId === "NAVIGATE_HUMAN_REVIEW") {
-      onNavigateToHumanReview();
-    } else if (actionId === "NAVIGATE_WATCHDOG") {
-      onNavigateToWatchdog();
-    } else if (actionId === "FILTER_WEIGHT" || actionId === "NAVIGATE_SHIPMENTS") {
-      onNavigateToShipments();
-    } else if (actionId === "SIMULATE_SEND") {
-      handleDispatchEmail(`act-${Date.now()}`);
-    } else if (actionId === "OPEN_PASSPORT") {
-      onNavigateToCase(payload || selectedCaseId);
-    }
-  };
+  // Inside MultiAgentChatbox.tsx -> handleActionClick:
+const handleActionClick = (actionId: string, payload?: any) => {
+  if (actionId === "OPEN_CASE" && payload) {
+    onNavigateToCase(payload);
+  } else if (actionId === "INVESTIGATE_CASE" && payload) {
+    setSelectedCaseId(payload);
+    const targetCase = cases.find((c) => c.id === payload);
+    handleSendMessage(`Investigate case ${targetCase?.shipmentReference || payload} in depth and prepare required carrier actions`);
+  } else if (actionId === "NAVIGATE_REVISION") {
+    onNavigateToRevision(selectedCaseId);
+  } else if (actionId === "NAVIGATE_HUMAN_REVIEW" || actionId === "OPEN_HUMAN_QUEUE") {
+    onNavigateToHumanReview();
+  } else if (actionId === "NAVIGATE_WATCHDOG") {
+    onNavigateToWatchdog();
+  } else if (actionId === "FILTER_WEIGHT" || actionId === "NAVIGATE_SHIPMENTS") {
+    onNavigateToShipments();
+  } else if (actionId === "SIMULATE_SEND") {
+    handleDispatchEmail(`act-${Date.now()}`);
+  // ✅ FIX 1: Open the Decision Passport tab (agents) instead of verification
+  } else if (actionId === "OPEN_PASSPORT" || actionId === "VIEW_PASSPORT") {
+    if (payload) setSelectedCaseId(payload);
+    onNavigateToCase(payload || selectedCaseId);
+  // ✅ FIX 2: Handle Draft Amendment action properly
+  } else if (actionId === "DRAFT_AMENDMENT" || actionId === "DRAFT_RESOLUTION") {
+    if (payload) setSelectedCaseId(payload);
+    onNavigateToCase(payload || selectedCaseId);
+  }
+};
 
   // Handle sending a user prompt
   const handleSendMessage = async (textToSend?: string) => {
