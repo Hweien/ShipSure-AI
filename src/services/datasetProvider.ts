@@ -13,7 +13,7 @@ import {
 import { SYNTHETIC_DEMO_CASES } from "./syntheticData";
 
 class DatasetService {
-  private mode: DataSourceMode = "DEMO";
+  private mode: DataSourceMode = "DOCKER";
   private localPath: string = "./data";
   private dockerUrl: string = "http://localhost:8080";
   private cases: ShipmentCase[] = [];
@@ -181,6 +181,25 @@ class DatasetService {
         message: `Connection failed to ${this.dockerUrl}: ${err.message}`
       };
     }
+  }
+
+  public async loadFromBackend(): Promise<void> {
+    if (this.mode === "DEMO") {
+      this.initDemoData();
+      return;
+    }
+
+    const response = await fetch("/api/dataset/emails");
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to load dataset: HTTP ${response.status}`
+      );
+    }
+
+    const emails = await response.json();
+
+    this.emails = emails;
   }
 }
 
