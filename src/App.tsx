@@ -60,33 +60,110 @@ export default function App() {
     workspaceRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  const formatLocalDate = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+  };
+
+  const today = new Date();
+
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  const todayStr = formatLocalDate(today);
+  const yesterdayStr = formatLocalDate(yesterday);
+
+  const isWithinLastDays = (
+    dateString: string,
+    days: number
+  ) => {
+    const itemDate = new Date(dateString);
+    const now = new Date();
+
+    const start = new Date(now);
+    start.setDate(now.getDate() - days);
+
+    return itemDate >= start && itemDate <= now;
+  };
+  
   // Synchronize Global Date Filter across all data
   const filteredCases = cases.filter((c) => {
+    const dateStr = c.receivedDate ?? "";
+
     if (dateFilter.preset === "TODAY") {
-      return c.receivedDate.startsWith("2026-09-19");
-    } else if (dateFilter.preset === "YESTERDAY") {
-      return c.receivedDate.startsWith("2026-09-18");
-    } else if (dateFilter.preset === "CUSTOM" && dateFilter.startDate && dateFilter.endDate) {
-      const itemDate = c.receivedDate.split("T")[0];
-      return itemDate >= dateFilter.startDate && itemDate <= dateFilter.endDate;
+      return dateStr.startsWith(todayStr);
     }
-    // "LAST_7_DAYS", "LAST_30_DAYS", "THIS_MONTH" include all cases in our demo set
+
+    if (dateFilter.preset === "YESTERDAY") {
+      return dateStr.startsWith(yesterdayStr);
+    }
+
+    if (dateFilter.preset === "LAST_7_DAYS") {
+      return isWithinLastDays(dateStr, 7);
+    }
+
+    if (dateFilter.preset === "LAST_30_DAYS") {
+      return isWithinLastDays(dateStr, 30);
+    }
+
+    if (
+      dateFilter.preset === "CUSTOM" &&
+      dateFilter.startDate &&
+      dateFilter.endDate
+    ) {
+      const itemDate = dateStr.split("T")[0];
+
+      return (
+        itemDate >= dateFilter.startDate &&
+        itemDate <= dateFilter.endDate
+      );
+    }
+
     return true;
   });
 
   // Replace e.date with the correct property from your EmailRecord type
   const filteredEmails = emails.filter((e) => {
-    // Use optional chaining (?.) and provide a default empty string ("")
-    const dateStr = e.date ?? ""; 
+    // Docker email records may not contain a date.
+    // Keep undated emails visible.
+    if (!e.date) {
+      return true;
+    }
+
+    const dateStr = e.date;
 
     if (dateFilter.preset === "TODAY") {
-      return dateStr.startsWith("2026-09-19");
-    } else if (dateFilter.preset === "YESTERDAY") {
-      return dateStr.startsWith("2026-09-18");
-    } else if (dateFilter.preset === "CUSTOM" && dateFilter.startDate && dateFilter.endDate) {
-      const itemDate = dateStr.split("T")[0];
-      return itemDate >= dateFilter.startDate && itemDate <= dateFilter.endDate;
+      return dateStr.startsWith(todayStr);
     }
+
+    if (dateFilter.preset === "YESTERDAY") {
+      return dateStr.startsWith(yesterdayStr);
+    }
+
+    if (dateFilter.preset === "LAST_7_DAYS") {
+      return isWithinLastDays(dateStr, 7);
+    }
+
+    if (dateFilter.preset === "LAST_30_DAYS") {
+      return isWithinLastDays(dateStr, 30);
+    }
+
+    if (
+      dateFilter.preset === "CUSTOM" &&
+      dateFilter.startDate &&
+      dateFilter.endDate
+    ) {
+      const itemDate = dateStr.split("T")[0];
+
+      return (
+        itemDate >= dateFilter.startDate &&
+        itemDate <= dateFilter.endDate
+      );
+    }
+
     return true;
   });
 
