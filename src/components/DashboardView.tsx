@@ -32,6 +32,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [briefingGenerating, setBriefingGenerating] = useState(false);
   const [customBriefing, setCustomBriefing] = useState<string | null>(null);
 
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 18) return "Good afternoon";
+    return "Good evening";
+  };
  // Filter cases based on the selected date filter
   const filteredCases = cases.filter((c) => {
     if (dateFilter.preset === "TODAY") {
@@ -73,7 +79,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-            Good morning, Operations Lead
+            {getGreeting()}, Operations Lead
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Here is your live shipping document verification overview for <span className="font-semibold text-slate-700">{dateFilter.preset.replace(/_/g, " ")}</span>.

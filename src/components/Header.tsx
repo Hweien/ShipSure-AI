@@ -19,7 +19,6 @@ interface HeaderProps {
   onStartPriorityCase: () => void;
   onSearch: (interpreted: InterpretedSearchQuery | null) => void;
   onNavigate: (tab: string) => void;
-  onOpenVisionOcr?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -29,8 +28,7 @@ export const Header: React.FC<HeaderProps> = ({
   copilotOpen,
   onStartPriorityCase,
   onSearch,
-  onNavigate,
-  onOpenVisionOcr
+  onNavigate
 }) => {
   const [searchInput, setSearchInput] = useState("");
   const [interpretedQuery, setInterpretedQuery] = useState<InterpretedSearchQuery | null>(null);
@@ -62,7 +60,10 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header id="shipsure-header" className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs">
+    <header
+      id="shipsure-header"
+      className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs"
+    >
       {/* Left: Brand Identity */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2.5">
@@ -137,17 +138,17 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Global Date Filter Box */}
         <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700">
           <Calendar className="w-3.5 h-3.5 text-slate-500 mr-1.5" />
-          
-          {/* Dropdown Select */}
           <select
             id="global-date-selector"
             value={currentDateFilter.preset}
-            onChange={(e) => onDateFilterChange({ 
-              ...currentDateFilter, 
-              preset: e.target.value as any,
-              startDate: e.target.value === "CUSTOM" ? (currentDateFilter.startDate || "2026-09-15") : undefined,
-              endDate: e.target.value === "CUSTOM" ? (currentDateFilter.endDate || "2026-09-19") : undefined
-            })}
+            onChange={(e) =>
+              onDateFilterChange({
+                ...currentDateFilter,
+                preset: e.target.value as any,
+                startDate: e.target.value === "CUSTOM" ? currentDateFilter.startDate || "2026-09-15" : undefined,
+                endDate: e.target.value === "CUSTOM" ? currentDateFilter.endDate || "2026-09-19" : undefined
+              })
+            }
             className="bg-transparent border-none text-slate-800 focus:outline-none cursor-pointer pr-1"
           >
             <option value="TODAY">Today (Sep 19)</option>
@@ -159,7 +160,6 @@ export const Header: React.FC<HeaderProps> = ({
             <option value="CUSTOM">Custom Range</option>
           </select>
 
-          {/* Date Pickers appear beside the select when CUSTOM is chosen */}
           {currentDateFilter.preset === "CUSTOM" && (
             <div className="flex items-center gap-1.5 ml-2 border-l border-slate-200 pl-2">
               <input
@@ -168,7 +168,7 @@ export const Header: React.FC<HeaderProps> = ({
                 onChange={(e) =>
                   onDateFilterChange({
                     ...currentDateFilter,
-                    startDate: e.target.value,
+                    startDate: e.target.value
                   })
                 }
                 className="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[11px] text-slate-700"
@@ -180,7 +180,7 @@ export const Header: React.FC<HeaderProps> = ({
                 onChange={(e) =>
                   onDateFilterChange({
                     ...currentDateFilter,
-                    endDate: e.target.value,
+                    endDate: e.target.value
                   })
                 }
                 className="bg-white border border-slate-200 rounded px-1.5 py-0.5 text-[11px] text-slate-700"
@@ -189,20 +189,7 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        {/* 1-Click Colorblind / High-Contrast Mode Toggle */}
-          <button
-            type="button"
-            onClick={() => {
-              document.body.classList.toggle("colorblind-mode");
-            }}
-            className="flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 transition cursor-pointer"
-            title="Toggle WCAG High Contrast / Colorblind Accessibility Mode"
-          >
-            <span>👁️</span>
-            <span className="hidden lg:inline">Accessible Mode</span>
-          </button>
-
-        {/* Start Next Priority Case Button */}
+        {/* Start Priority Case Button */}
         <button
           id="btn-start-priority"
           onClick={onStartPriorityCase}
@@ -212,7 +199,7 @@ export const Header: React.FC<HeaderProps> = ({
           <span>Priority Queue</span>
         </button>
 
-        {/* Multi-Agent Chatbox Toggle Button */}
+        {/* Multi-Agent Chatbox Toggle */}
         <button
           id="btn-toggle-copilot"
           onClick={onOpenCopilot}
@@ -224,7 +211,11 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Bot className={`w-3.5 h-3.5 ${copilotOpen ? "text-white" : "text-blue-600"}`} />
           <span>Multi-Agent Chat</span>
-          <span className={`text-[10px] px-1 rounded font-bold ${copilotOpen ? "bg-blue-700 text-blue-100" : "bg-emerald-100 text-emerald-800"}`}>
+          <span
+            className={`text-[10px] px-1 rounded font-bold ${
+              copilotOpen ? "bg-blue-700 text-blue-100" : "bg-emerald-100 text-emerald-800"
+            }`}
+          >
             7
           </span>
         </button>

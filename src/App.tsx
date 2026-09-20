@@ -1,9 +1,4 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { DashboardView } from "./components/DashboardView";
@@ -19,6 +14,7 @@ import { EvaluationView } from "./components/EvaluationView";
 import { SettingsView } from "./components/SettingsView";
 import { MultiAgentChatbox } from "./components/MultiAgentChatbox";
 import { VisionOcrModal } from "./components/VisionOcrModal";
+import { LandingHero } from "./components/LandingHero";
 import { Users } from "lucide-react";
 import { datasetProvider } from "./services/datasetProvider";
 import { ComparisonField, EmailRecord, GlobalDateFilter, ShipmentCase } from "./types";
@@ -34,6 +30,8 @@ export default function App() {
   const [emails, setEmails] = useState<EmailRecord[]>([]);
   const [initialFilterField, setInitialFilterField] = useState<ComparisonField | undefined>(undefined);
 
+  const workspaceRef = useRef<HTMLDivElement>(null);
+
   // Reload data from provider
   const refreshData = () => {
     setCases([...datasetProvider.getCases()]);
@@ -44,7 +42,11 @@ export default function App() {
     refreshData();
   }, []);
 
-  // Synchronize Global Date Filter across all data
+  // Smooth scroll to the operations workspace when clicking "Explore"
+  const handleScrollToWorkspace = () => {
+    workspaceRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
   // Synchronize Global Date Filter across all data
   const filteredCases = cases.filter((c) => {
     if (dateFilter.preset === "TODAY") {
@@ -174,198 +176,208 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-100 text-slate-900 font-sans">
-      {/* Top Application Header */}
-      <Header
-        currentDateFilter={dateFilter}
-        onDateFilterChange={setDateFilter}
-        onOpenCopilot={() => setCopilotOpen(!copilotOpen)}
-        copilotOpen={copilotOpen}
-        onStartPriorityCase={handleStartPriority}
-        onSearch={handleSearchInterpreted}
-        onNavigate={(tab) => setActiveTab(tab)}
-      />
+    <div className="w-full min-h-screen bg-slate-950 font-sans scroll-smooth overflow-x-hidden">
+      {/* 1. FRONT HERO COVER (Glassy Landing Section with Motion Background) */}
+      <LandingHero onExplore={handleScrollToWorkspace} />
 
-      {/* Main App Layout */}
-      <div className="flex flex-1 overflow-hidden relative">
-        {/* Navigation Sidebar */}
-        <Sidebar
-          activeTab={activeTab === "verification" ? "shipments" : activeTab}
-          onSelectTab={(tab) => {
-            setActiveTab(tab);
-            if (tab !== "verification") {
-              setInitialFilterField(undefined);
-            }
-          }}
-          humanReviewCount={humanReviewCount}
-          mismatchCount={mismatchCount}
-          onOpenChat={() => setCopilotOpen(true)}
-        />
-
-        {/* Dynamic Center Stage */}
-        <main className="flex-1 overflow-y-auto bg-slate-50 relative">
-          {activeTab === "dashboard" && (
-            <DashboardView
-              cases={filteredCases}
-              dateFilter={dateFilter}
-              onNavigate={(tab, caseId) => {
-                if (caseId) {
-                  setSelectedCaseId(caseId);
-                  setActiveTab("verification");
-                } else {
-                  setActiveTab(tab);
-                }
-              }}
-              onStartPriority={handleStartPriority}
-            />
-          )}
-
-          {activeTab === "inbox" && (
-            <InboxView
-              emails={filteredEmails}
-              cases={filteredCases}
-              onSelectCase={handleOpenCase}
-              onAskCopilotAboutEmail={handleAskCopilotAboutEmail}
-            />
-          )}
-
-          {activeTab === "shipments" && (
-            <ShipmentsView
-              cases={filteredCases}
-              onSelectCase={handleOpenCase}
-              onOpenRevision={(caseId) => {
-                setSelectedCaseId(caseId);
-                setActiveTab("revision");
-              }}
-              initialFilterField={initialFilterField}
-            />
-          )}
-
-          {activeTab === "verification" && selectedCase && (
-            <VerificationView
-              shipmentCase={selectedCase}
-              onBack={() => setActiveTab("shipments")}
-              onAskCopilot={handleAskCopilotAboutCase}
-              onSendToHumanReview={(caseId) => {
-                setSelectedCaseId(caseId);
-                setActiveTab("human-review");
-              }}
-              onOpenVisionOcr={() => setVisionOcrOpen(true)}
-            />
-          )}
-
-          {activeTab === "human-review" && (
-            <HumanReviewView
-              cases={filteredCases}
-              onOpenCase={handleOpenCase}
-              onRefreshCases={refreshData}
-              onOpenVisionOcr={(caseId) => {
-                if (caseId) setSelectedCaseId(caseId);
-                setVisionOcrOpen(true);
-              }}
-            />
-          )}
-
-          {activeTab === "revision" && (
-            <RevisionView
-              cases={filteredCases}
-              onOpenCase={handleOpenCase}
-              onNavigateToHumanReview={(caseId) => {
-                setSelectedCaseId(caseId);
-                setActiveTab("human-review");
-              }}
-            />
-          )}
-
-          {activeTab === "watchdog" && <WatchdogView />}
-
-          {activeTab === "analytics" && (
-            <AnalyticsView
-              cases={filteredCases}
-              onSelectFieldDrillDown={handleFieldDrillDown}
-            />
-          )}
-
-          {activeTab === "agents" && (
-            <AgentActivityView
-              cases={filteredCases}
-              onOpenCase={handleOpenCase}
-            />
-          )}
-
-          {activeTab === "evaluation" && <EvaluationView />}
-
-          {activeTab === "settings" && <SettingsView />}
-        </main>
-
-        {/* Floating Quick Launcher Trigger */}
-        {!copilotOpen && (
-          <button
-            id="btn-floating-multi-agent"
-            onClick={() => setCopilotOpen(true)}
-            className="fixed bottom-6 right-6 z-40 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-2xl px-4 py-3 flex items-center gap-2.5 transition-all hover:scale-105 cursor-pointer border border-blue-400/40 select-none animate-in fade-in"
-          >
-            <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center font-bold">
-              <Users className="w-4 h-4 text-white" />
-            </div>
-            <div className="text-left">
-              <div className="text-xs font-bold flex items-center gap-1.5">
-                <span>Multi-Agent Chat</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              </div>
-              <div className="text-[10px] text-blue-100 font-medium">
-                7 Agents Active • {selectedCase?.shipmentReference || "Live Ops"}
-              </div>
-            </div>
-          </button>
-        )}
-
-        {/* Multi-Agent Operations War Room Chatbox */}
-        <MultiAgentChatbox
-          isOpen={copilotOpen}
-          onClose={() => setCopilotOpen(false)}
-          cases={filteredCases}
-          activeCase={selectedCase}
+      {/* 2. OPERATIONS WORKSPACE (The Main Dashboard & Control Hub) */}
+      <div
+        id="operations-workspace"
+        ref={workspaceRef}
+        className="flex flex-col h-screen w-screen overflow-hidden bg-slate-100 text-slate-900 border-t border-slate-800"
+      >
+        {/* Top Application Header */}
+        <Header
           currentDateFilter={dateFilter}
-          onNavigateToCase={(caseId) => {
-            setSelectedCaseId(caseId);
-            setActiveTab("verification");
-          }}
-          onNavigateToRevision={(caseId) => {
-            if (caseId) setSelectedCaseId(caseId);
-            setActiveTab("revision");
-          }}
-          onNavigateToHumanReview={() => setActiveTab("human-review")}
-          onNavigateToWatchdog={() => setActiveTab("watchdog")}
-          onNavigateToShipments={() => setActiveTab("shipments")}
+          onDateFilterChange={setDateFilter}
+          onOpenCopilot={() => setCopilotOpen(!copilotOpen)}
+          copilotOpen={copilotOpen}
+          onStartPriorityCase={handleStartPriority}
+          onSearch={handleSearchInterpreted}
+          onNavigate={(tab) => setActiveTab(tab)}
         />
 
-        {/* AI Multimodal Vision & OCR Reader Modal */}
-        <VisionOcrModal
-          isOpen={visionOcrOpen}
-          onClose={() => setVisionOcrOpen(false)}
-          activeCase={selectedCase}
-          onApplyExtractedFields={(fields) => {
-            if (selectedCase) {
-              datasetProvider.updateHumanReview(selectedCase.id, {
-                reviewer: "AI Vision OCR Engine (Gemini 3.6 Flash)",
-                approvedStatus: "OK",
-                comments: "Updated fields directly from Multimodal Vision model OCR extraction pass.",
-                manualOverrides: {
-                  gross_weight_kg: fields.gross_weight_kg?.value ? `${fields.gross_weight_kg.value} KG` : undefined,
-                  container_count: fields.container_count?.value ? String(fields.container_count.value) : undefined,
-                  shipper: fields.shipper?.value,
-                  consignee: fields.consignee?.value,
-                }
-              });
-              refreshData();
-            }
-          }}
-          onSendToReviewWithCandidates={(caseId) => {
-            setSelectedCaseId(caseId);
-            setActiveTab("human-review");
-          }}
-        />
+        {/* Main App Layout */}
+        <div className="flex flex-1 overflow-hidden relative">
+          {/* Navigation Sidebar */}
+          <Sidebar
+            activeTab={activeTab === "verification" ? "shipments" : activeTab}
+            onSelectTab={(tab) => {
+              setActiveTab(tab);
+              if (tab !== "verification") {
+                setInitialFilterField(undefined);
+              }
+            }}
+            humanReviewCount={humanReviewCount}
+            mismatchCount={mismatchCount}
+            onOpenChat={() => setCopilotOpen(true)}
+          />
+
+          {/* Dynamic Center Stage */}
+          <main className="flex-1 overflow-y-auto bg-slate-50 relative">
+            {activeTab === "dashboard" && (
+              <DashboardView
+                cases={filteredCases}
+                dateFilter={dateFilter}
+                onNavigate={(tab, caseId) => {
+                  if (caseId) {
+                    setSelectedCaseId(caseId);
+                    setActiveTab("verification");
+                  } else {
+                    setActiveTab(tab);
+                  }
+                }}
+                onStartPriority={handleStartPriority}
+              />
+            )}
+
+            {activeTab === "inbox" && (
+              <InboxView
+                emails={filteredEmails}
+                cases={filteredCases}
+                onSelectCase={handleOpenCase}
+                onAskCopilotAboutEmail={handleAskCopilotAboutEmail}
+              />
+            )}
+
+            {activeTab === "shipments" && (
+              <ShipmentsView
+                cases={filteredCases}
+                onSelectCase={handleOpenCase}
+                onOpenRevision={(caseId) => {
+                  setSelectedCaseId(caseId);
+                  setActiveTab("revision");
+                }}
+                initialFilterField={initialFilterField}
+              />
+            )}
+
+            {activeTab === "verification" && selectedCase && (
+              <VerificationView
+                shipmentCase={selectedCase}
+                onBack={() => setActiveTab("shipments")}
+                onAskCopilot={handleAskCopilotAboutCase}
+                onSendToHumanReview={(caseId) => {
+                  setSelectedCaseId(caseId);
+                  setActiveTab("human-review");
+                }}
+                onOpenVisionOcr={() => setVisionOcrOpen(true)}
+              />
+            )}
+
+            {activeTab === "human-review" && (
+              <HumanReviewView
+                cases={filteredCases}
+                onOpenCase={handleOpenCase}
+                onRefreshCases={refreshData}
+                onOpenVisionOcr={(caseId) => {
+                  if (caseId) setSelectedCaseId(caseId);
+                  setVisionOcrOpen(true);
+                }}
+              />
+            )}
+
+            {activeTab === "revision" && (
+              <RevisionView
+                cases={filteredCases}
+                onOpenCase={handleOpenCase}
+                onNavigateToHumanReview={(caseId) => {
+                  setSelectedCaseId(caseId);
+                  setActiveTab("human-review");
+                }}
+              />
+            )}
+
+            {activeTab === "watchdog" && <WatchdogView />}
+
+            {activeTab === "analytics" && (
+              <AnalyticsView
+                cases={filteredCases}
+                onSelectFieldDrillDown={handleFieldDrillDown}
+              />
+            )}
+
+            {activeTab === "agents" && (
+              <AgentActivityView
+                cases={filteredCases}
+                onOpenCase={handleOpenCase}
+              />
+            )}
+
+            {activeTab === "evaluation" && <EvaluationView />}
+
+            {activeTab === "settings" && <SettingsView />}
+          </main>
+
+          {/* Compact Floating Quick Launcher */}
+          {!copilotOpen && (
+            <button
+              id="btn-floating-multi-agent"
+              onClick={() => setCopilotOpen(true)}
+              title="Open Multi-Agent War Room (7 Agents Online)"
+              className="group fixed bottom-5 right-5 z-40 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl hover:shadow-2xl p-3 flex items-center gap-2.5 transition-all duration-200 hover:pr-4 cursor-pointer border border-blue-400/30 select-none animate-in fade-in"
+            >
+              {/* Icon with active pulse dot */}
+              <div className="relative flex items-center justify-center">
+                <Users className="w-5 h-5 text-white" />
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-blue-600 animate-pulse" />
+              </div>
+
+              {/* Text expands smoothly on hover */}
+              <div className="max-w-0 overflow-hidden whitespace-nowrap group-hover:max-w-xs transition-all duration-300 ease-in-out text-left">
+                <div className="text-xs font-bold leading-tight">Multi-Agent Chat</div>
+                <div className="text-[10px] text-blue-200">7 Online</div>
+              </div>
+            </button>
+          )}
+
+          {/* Multi-Agent Operations War Room Chatbox */}
+          <MultiAgentChatbox
+            isOpen={copilotOpen}
+            onClose={() => setCopilotOpen(false)}
+            cases={filteredCases}
+            activeCase={selectedCase}
+            currentDateFilter={dateFilter}
+            onNavigateToCase={(caseId) => {
+              setSelectedCaseId(caseId);
+              setActiveTab("verification");
+            }}
+            onNavigateToRevision={(caseId) => {
+              if (caseId) setSelectedCaseId(caseId);
+              setActiveTab("revision");
+            }}
+            onNavigateToHumanReview={() => setActiveTab("human-review")}
+            onNavigateToWatchdog={() => setActiveTab("watchdog")}
+            onNavigateToShipments={() => setActiveTab("shipments")}
+          />
+
+          {/* AI Multimodal Vision & OCR Reader Modal */}
+          <VisionOcrModal
+            isOpen={visionOcrOpen}
+            onClose={() => setVisionOcrOpen(false)}
+            activeCase={selectedCase}
+            onApplyExtractedFields={(fields) => {
+              if (selectedCase) {
+                datasetProvider.updateHumanReview(selectedCase.id, {
+                  reviewer: "AI Vision OCR Engine (Gemini 3.8 Flash)",
+                  approvedStatus: "OK",
+                  comments: "Updated fields directly from Multimodal Vision model OCR extraction pass.",
+                  manualOverrides: {
+                    gross_weight_kg: fields.gross_weight_kg?.value ? `${fields.gross_weight_kg.value} KG` : undefined,
+                    container_count: fields.container_count?.value ? String(fields.container_count.value) : undefined,
+                    shipper: fields.shipper?.value,
+                    consignee: fields.consignee?.value,
+                  }
+                });
+                refreshData();
+              }
+            }}
+            onSendToReviewWithCandidates={(caseId) => {
+              setSelectedCaseId(caseId);
+              setActiveTab("human-review");
+            }}
+          />
+        </div>
       </div>
     </div>
   );
