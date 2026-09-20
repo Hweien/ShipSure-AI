@@ -30,30 +30,15 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
   onOpenVisionOcr,
   initialCaseId
 }) => {
-  const [selectedCase, setSelectedCase] = useState<ShipmentCase | null>(() => {
-    if (initialCaseId) {
-      return cases.find((c) => c.id === initialCaseId) || null;
-    }
-    return null;
-  });
+  // Modal starts closed (null). It only opens when clicking "Review & Decide".
+  const [selectedCase, setSelectedCase] = useState<ShipmentCase | null>(null);
 
   const [overrideValue, setOverrideValue] = useState("");
   const [overrideField, setOverrideField] = useState<string>("consignee");
   const [decisionNotes, setDecisionNotes] = useState("");
   const [reviewerName, setReviewerName] = useState("Sarah Tan (Senior Doc Specialist)");
 
-  // Sync modal when initialCaseId is passed from RevisionView
-  useEffect(() => {
-    if (initialCaseId) {
-      const target = cases.find((c) => c.id === initialCaseId);
-      // Only auto-open if the case has NOT been reviewed yet!
-      if (target && !target.humanReviewed) {
-        setSelectedCase(target);
-      }
-    }
-  }, [initialCaseId]); 
-
-  // Dynamically set the correct target field and pre-fill values based on the case
+  // Dynamically set the correct target field and pre-fill values when a modal is opened
   useEffect(() => {
     if (selectedCase) {
       if (selectedCase.hasRevision && selectedCase.revisionComparison?.unexpectedChanges?.length) {

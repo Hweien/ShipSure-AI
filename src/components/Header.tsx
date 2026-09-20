@@ -72,8 +72,8 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-bold tracking-tight text-slate-900 text-base">SHIP SURE AI</span>
-              <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-200">
+              <span className="font-bold tracking-tight text-slate-900 text-base">ShipSure-AI</span>
+              <span className="text-[8px] uppercase tracking-wider px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold border border-blue-200">
                 Operations Hub
               </span>
             </div>
