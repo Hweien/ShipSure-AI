@@ -28,6 +28,33 @@ const auditRepository = new JsonAuditRepository();
 
 type DataSourceMode = "DEMO" | "LOCAL" | "DOCKER";
 
+type PipelineRunState = {
+  running: boolean;
+  total: number;
+  processed: number;
+  failed: number;
+  skipped: number;
+  currentEmailId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  failures: {
+    emailId: string;
+    error: string;
+  }[];
+};
+
+const pipelineRunState: PipelineRunState = {
+  running: false,
+  total: 0,
+  processed: 0,
+  failed: 0,
+  skipped: 0,
+  currentEmailId: null,
+  startedAt: null,
+  finishedAt: null,
+  failures: [],
+};
+
 let serverConfig: {
   dataSource: DataSourceMode;
   dataPath: string;
@@ -120,6 +147,23 @@ async function fetchJson(
   }
 
   return JSON.parse(text);
+}
+
+async function internalPostJson<T>(
+  route: string,
+  body: unknown
+): Promise<T> {
+  return fetchJson(
+    `http://127.0.0.1:${PORT}${route}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+    90000
+  ) as Promise<T>;
 }
 
 function dockerBase(): string {
@@ -386,9 +430,85 @@ app.post("/api/ds1/read-document", async (req, res) => {
 // ---------------------------------------------------------------------------
 // DS1 - Identify SI and BL attachments
 // ---------------------------------------------------------------------------
+function identifyDocumentsFallback(
+  attachments: string[],
+  attachmentContents: any[]
+) {
+  return attachments.map((attachmentPath) => {
+    const filename = attachmentPath
+      .split(/[\\/]/)
+      .pop()
+      ?.toLowerCase() || "";
+
+    const contentRecord = attachmentContents.find(
+      (doc: any) => doc.path === attachmentPath
+    );
+
+    const content = String(
+      contentRecord?.content || ""
+    ).toLowerCase();
+
+    let documentType:
+      | "SI"
+      | "BL"
+      | "OTHER"
+      | "UNKNOWN" = "UNKNOWN";
+
+    let evidence =
+      "No strong deterministic document marker found.";
+
+    // Strong SI indicators
+    if (
+      content.includes("shipping instruction") ||
+      filename.includes("_si.") ||
+      filename.includes("-si.") ||
+      filename.startsWith("si_")
+    ) {
+      documentType = "SI";
+      evidence =
+        "Identified by explicit Shipping Instruction marker in filename/content.";
+    }
+
+    // Strong BL indicators
+    else if (
+      content.includes("bill of lading") ||
+      filename.includes("_bl.") ||
+      filename.includes("-bl.") ||
+      filename.includes("draft_bl") ||
+      filename.includes("draft-bl")
+    ) {
+      documentType = "BL";
+      evidence =
+        "Identified by explicit Bill of Lading marker in filename/content.";
+    }
+
+    return {
+      path: attachmentPath,
+      documentType,
+
+      // Conservative fallback score.
+      // This is not treated as calibrated probability.
+      confidence:
+        documentType === "UNKNOWN"
+          ? 0
+          : 0.6,
+
+      evidence:
+        `[Deterministic fallback] ${evidence}`
+    };
+  });
+}
+
 app.post("/api/ds1/identify-documents", async (req, res) => {
+  const {
+    email,
+    attachmentContents = []
+  } = req.body || {};
+
+  const attachments =
+    email?.attachments || [];
+
   try {
-    const { email, attachmentContents = [] } = req.body || {};
     if (!email || !email.email_id) {
       return res.status(400).json({ error: "Invalid email input" });
     }
@@ -470,18 +590,37 @@ Return ONLY valid JSON as an array:
 
     return res.json(parsed);
   } catch (error: any) {
-    console.error("Document identification error:", error);
-    if (error?.status === 429) {
-      return res.status(429).json({
+      console.error(
+        "Document identification error:",
+        error
+      );
+
+      // Gemini temporarily unavailable:
+      // fall back to deterministic evidence.
+      if (
+        error?.status === 503 ||
+        error?.status === 429
+      ) {
+        console.warn(
+          "Gemini identification unavailable. " +
+          "Using deterministic fallback."
+        );
+
+        const fallback =
+          identifyDocumentsFallback(
+            attachments,
+            attachmentContents
+          );
+
+        return res.json(fallback);
+      }
+
+      return res.status(500).json({
         success: false,
-        error: "Gemini document identification quota exceeded",
+        error:
+          "Document identification failed"
       });
     }
-    return res.status(503).json({
-      success: false,
-      error: "Document identification is temporarily unavailable",
-    });
-  }
 });
 
 // ---------------------------------------------------------------------------
@@ -710,39 +849,21 @@ app.post(
   "/api/pipeline/process/:emailId",
   async (req, res) => {
     try {
-      const emailId =
-        req.params.emailId;
+      const emailId = req.params.emailId;
 
-      if (
-        !/^email_[A-Za-z0-9_-]+$/i.test(
-          emailId
-        )
-      ) {
-        return res
-          .status(400)
-          .json({
-            error: "Invalid email id",
-          });
+      if (!/^email_[A-Za-z0-9_-]+$/i.test(emailId)) {
+        return res.status(400).json({
+          error: "Invalid email id",
+        });
       }
 
-      // -------------------------------------
-      // Load email from official data source
-      // -------------------------------------
       let email: any;
 
-      if (
-        serverConfig.dataSource ===
-        "DOCKER"
-      ) {
+      if (serverConfig.dataSource === "DOCKER") {
         email = await fetchJson(
-          `${dockerBase()}/emails/${encodeURIComponent(
-            emailId
-          )}`
+          `${dockerBase()}/emails/${encodeURIComponent(emailId)}`
         );
-      } else if (
-        serverConfig.dataSource ===
-        "LOCAL"
-      ) {
+      } else if (serverConfig.dataSource === "LOCAL") {
         const file = path.join(
           localRoot(),
           "inbox",
@@ -750,10 +871,7 @@ app.post(
         );
 
         email = JSON.parse(
-          await fs.readFile(
-            file,
-            "utf8"
-          )
+          await fs.readFile(file, "utf8")
         );
       } else {
         return res.status(409).json({
@@ -762,57 +880,18 @@ app.post(
         });
       }
 
-      // -------------------------------------
-      // Allows the backend pipeline to reuse
-      // the DS1 API endpoints already written
-      // by DS1.
-      // -------------------------------------
-      const internalPostJson =
-        async <T>(
-          route: string,
-          body: unknown
-        ): Promise<T> => {
-          return fetchJson(
-            `http://127.0.0.1:${PORT}${route}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type":
-                  "application/json"
-              },
-              body: JSON.stringify(body)
-            },
-            90000
-          ) as Promise<T>;
-        };
-
-      // -------------------------------------
-      // DS1 → DS2 pipeline
-      // -------------------------------------
       const shipmentCase =
         await processEmailPipeline(
           email,
           internalPostJson
         );
 
-      // -------------------------------------
-      // Persist case
-      // -------------------------------------
-      caseRepository.save(
-        shipmentCase
-      );
+      caseRepository.save(shipmentCase);
 
-      // -------------------------------------
-      // CS1 orchestration audit events
-      // -------------------------------------
       const events =
-        orchestrateCase(
-          shipmentCase
-        );
+        orchestrateCase(shipmentCase);
 
-      await auditRepository.append(
-        events
-      );
+      await auditRepository.append(events);
 
       return res.json({
         success: true,
@@ -825,15 +904,258 @@ app.post(
         error
       );
 
-      return res
-        .status(500)
-        .json({
-          success: false,
-          error:
-            error.message ||
-            "Pipeline processing failed",
-        });
+      return res.status(500).json({
+        success: false,
+        error:
+          error.message ||
+          "Pipeline processing failed",
+      });
     }
+  }
+);
+
+async function processAllEmails(): Promise<void> {
+  if (pipelineRunState.running) {
+    console.log(
+      "[Pipeline] Full inbox processing is already running."
+    );
+    return;
+  }
+
+  pipelineRunState.running = true;
+  pipelineRunState.total = 0;
+  pipelineRunState.processed = 0;
+  pipelineRunState.failed = 0;
+  pipelineRunState.skipped = 0;
+  pipelineRunState.currentEmailId = null;
+  pipelineRunState.startedAt =
+    new Date().toISOString();
+  pipelineRunState.finishedAt = null;
+  pipelineRunState.failures = [];
+
+  try {
+    let emails: any[] = [];
+
+    // --------------------------------------------------
+    // Load full inbox
+    // --------------------------------------------------
+    if (serverConfig.dataSource === "DOCKER") {
+      emails = await fetchJson(
+        `${dockerBase()}/emails`
+      );
+    } else if (
+      serverConfig.dataSource === "LOCAL"
+    ) {
+      const inboxDir = path.join(
+        localRoot(),
+        "inbox"
+      );
+
+      const names = (
+        await fs.readdir(inboxDir)
+      )
+        .filter((name) =>
+          /^email_.*\.json$/i.test(name)
+        )
+        .sort();
+
+      emails = await Promise.all(
+        names.map(async (name) =>
+          JSON.parse(
+            await fs.readFile(
+              path.join(inboxDir, name),
+              "utf8"
+            )
+          )
+        )
+      );
+    } else {
+      throw new Error(
+        "Automatic pipeline requires LOCAL or DOCKER mode."
+      );
+    }
+
+    pipelineRunState.total =
+      emails.length;
+
+    console.log(
+      `[Pipeline] Starting automatic processing of ${emails.length} emails`
+    );
+
+    // --------------------------------------------------
+    // Process sequentially
+    // Important: do NOT Promise.all() 520 Gemini calls.
+    // --------------------------------------------------
+    for (
+      let index = 0;
+      index < emails.length;
+      index++
+    ) {
+      const email = emails[index];
+
+      pipelineRunState.currentEmailId =
+        email.email_id;
+
+      console.log(
+        `[Pipeline] ${index + 1}/${emails.length} - ${email.email_id}`
+      );
+
+      try {
+        // ----------------------------------------------
+        // Skip cases already processed
+        // ----------------------------------------------
+        const existing =
+          caseRepository
+            .getAll()
+            .find(
+              (item) =>
+                item.emailId ===
+                email.email_id
+            );
+
+        if (existing) {
+          pipelineRunState.skipped++;
+
+          console.log(
+            `[Pipeline] Skipped ${email.email_id} - already processed`
+          );
+
+          continue;
+        }
+
+        // ----------------------------------------------
+        // DS1 → DS2
+        // ----------------------------------------------
+        const shipmentCase =
+          await processEmailPipeline(
+            email,
+            internalPostJson
+          );
+
+        // ----------------------------------------------
+        // Save case
+        // ----------------------------------------------
+        caseRepository.save(
+          shipmentCase
+        );
+
+        // ----------------------------------------------
+        // Generate CS1 orchestration events
+        // ----------------------------------------------
+        const events =
+          orchestrateCase(
+            shipmentCase
+          );
+
+        await auditRepository.append(
+          events
+        );
+
+        pipelineRunState.processed++;
+
+        console.log(
+          `[Pipeline] Completed ${email.email_id} -> ${shipmentCase.category} / ${shipmentCase.verificationStatus}`
+        );
+      } catch (error: any) {
+        pipelineRunState.failed++;
+
+        const message =
+          error?.message ||
+          "Unknown processing error";
+
+        pipelineRunState.failures.push({
+          emailId: email.email_id,
+          error: message,
+        });
+
+        console.error(
+          `[Pipeline] Failed ${email.email_id}: ${message}`
+        );
+
+        // Do NOT stop the remaining 519 emails.
+      }
+    }
+  } catch (error: any) {
+    console.error(
+      "[Pipeline] Full inbox processing failed:",
+      error
+    );
+  } finally {
+    pipelineRunState.running = false;
+    pipelineRunState.currentEmailId = null;
+    pipelineRunState.finishedAt =
+      new Date().toISOString();
+
+    console.log(
+      "[Pipeline] Full inbox processing finished"
+    );
+
+    console.log(
+      `[Pipeline] Processed: ${pipelineRunState.processed}`
+    );
+
+    console.log(
+      `[Pipeline] Failed: ${pipelineRunState.failed}`
+    );
+
+    console.log(
+      `[Pipeline] Skipped: ${pipelineRunState.skipped}`
+    );
+  }
+}
+
+app.post(
+  "/api/pipeline/process-all",
+  (_req, res) => {
+    if (pipelineRunState.running) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Full inbox processing is already running.",
+        status: pipelineRunState,
+      });
+    }
+
+    // Start asynchronously.
+    // Do NOT await all 520 emails inside this request.
+    void processAllEmails();
+
+    return res.status(202).json({
+      success: true,
+      message:
+        "Automatic processing of the full inbox has started.",
+      total:
+        pipelineRunState.total,
+    });
+  }
+);
+
+app.get(
+  "/api/pipeline/status",
+  (_req, res) => {
+    const completed =
+      pipelineRunState.processed +
+      pipelineRunState.failed +
+      pipelineRunState.skipped;
+
+    const progress =
+      pipelineRunState.total > 0
+        ? Math.round(
+            (completed /
+              pipelineRunState.total) *
+              100
+          )
+        : 0;
+
+    return res.json({
+      ...pipelineRunState,
+
+      completed,
+      progress,
+
+      totalCases:
+        caseRepository.getAll().length,
+    });
   }
 );
 
@@ -1064,9 +1386,40 @@ async function startServer() {
     app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`ShipSure AI listening on 0.0.0.0:${PORT}`);
-  });
+  app.listen(
+    PORT,
+    "0.0.0.0",
+    () => {
+      console.log(
+        `ShipSure AI listening on http://0.0.0.0:${PORT}`
+      );
+
+      // --------------------------------------------------
+      // Optional automatic inbox processing on startup
+      // --------------------------------------------------
+      if (
+        process.env
+          .AUTO_PROCESS_DATASET ===
+          "true" &&
+        (
+          serverConfig.dataSource ===
+            "DOCKER" ||
+          serverConfig.dataSource ===
+            "LOCAL"
+        )
+      ) {
+        console.log(
+          "[Pipeline] AUTO_PROCESS_DATASET enabled."
+        );
+
+        // Give the server a moment to finish starting
+        // before it begins calling its own DS1 endpoints.
+        setTimeout(() => {
+          void processAllEmails();
+        }, 1500);
+      }
+    }
+  );
 }
 
 startServer().catch((error) => {
