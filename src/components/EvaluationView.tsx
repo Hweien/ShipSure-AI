@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   FileSpreadsheet,
   Download,
@@ -9,30 +9,83 @@ import {
   Check,
   Server
 } from "lucide-react";
-import { datasetProvider } from "../services/datasetProvider";
+import {
+  processEntireSDOCDataset,
+  SDOCDatasetResult
+} from "../services/evaluation_data/sdocDatasetLoader";
 
 /**
  * Evaluation View 
  */
 export const EvaluationView: React.FC = () => {
-  const [submissionJson, setSubmissionJson] = useState<string>(() => {
-    return JSON.stringify(datasetProvider.generateEvaluationSubmission(), null, 2);
-  });
   const [copied, setCopied] = useState(false);
   const [regenerated, setRegenerated] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [scoringResult, setScoringResult] = useState<any>(null);
-  const [dockerUrl, setDockerUrl] = useState("http://localhost:8080");
+  const [submissionJson, setSubmissionJson] = useState("");
+  const [sdocResult, setSdocResult] =
+    useState<SDOCDatasetResult | null>(null);
 
-  // Auto-sync on view open
-  useEffect(() => {
-    setSubmissionJson(JSON.stringify(datasetProvider.generateEvaluationSubmission(), null, 2));
-  }, []);
+  const [processing, setProcessing] = useState(false);
+
+  const [processingProgress, setProcessingProgress] = useState({
+    completed: 0,
+    total: 0
+  });
+  const [dockerUrl, setDockerUrl] = useState("http://localhost:8080");
+  const [scoringResult, setScoringResult] = useState<any | null>(null);
+
+  const handleProcessRealDataset = async () => {
+    setProcessing(true);
+    setScoringResult(null);
+
+    try {
+      const result = await processEntireSDOCDataset(
+        dockerUrl,
+        (completed, total) => {
+          setProcessingProgress({
+            completed,
+            total
+          });
+        }
+      );
+
+      setSdocResult(result);
+
+      setSubmissionJson(
+        JSON.stringify(result.submission, null, 2)
+      );
+
+      console.log("SDOC dataset processing complete");
+      console.log("Total emails:", result.emails.length);
+      console.log("Processed:", result.processedCount);
+      console.log("Failed:", result.failedCount);
+    } catch (error: any) {
+      console.error(
+        "Failed to process SDOC dataset:",
+        error
+      );
+
+      setScoringResult({
+        message: `Dataset processing failed: ${error.message}`
+      });
+    } finally {
+      setProcessing(false);
+    }
+  };
 
   const handleRegenerate = () => {
-    const fresh = JSON.stringify(datasetProvider.generateEvaluationSubmission(), null, 2);
+    if (!sdocResult) return;
+
+    const fresh = JSON.stringify(
+      sdocResult.submission,
+      null,
+      2
+    );
+
     setSubmissionJson(fresh);
+
     setRegenerated(true);
+
     setTimeout(() => setRegenerated(false), 1500);
   };
 
@@ -65,7 +118,10 @@ export const EvaluationView: React.FC = () => {
         body: JSON.stringify({ dockerUrl, submission: parsed })
       });
       const data = await res.json();
-      setScoringResult(data.simulatedFallback || data);
+      if (!res.ok) {
+        throw new Error(data.error || `Evaluation failed with HTTP ${res.status}`);
+      }
+      setScoringResult(data);
     } catch (err: any) {
       setScoringResult({ message: `Evaluation unavailable: ${err.message}` });
     } finally {
@@ -87,6 +143,21 @@ export const EvaluationView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleProcessRealDataset}
+            disabled={processing}
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg transition cursor-pointer border bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${processing ? "animate-spin" : ""}`}
+            />
+            <span>
+              {processing
+                ? `Processing ${processingProgress.completed}/${processingProgress.total}`
+                : "Process Real Dataset"}
+            </span>
+          </button>
+
           <button
             onClick={handleRegenerate}
             className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg transition cursor-pointer border ${
@@ -124,6 +195,33 @@ export const EvaluationView: React.FC = () => {
             <div>
               <h2 className="text-sm font-bold text-slate-900">Docker Evaluation Benchmark</h2>
               <p className="text-xs text-slate-500">POST payload to <span className="font-mono">/submit</span></p>
+            <div className="mt-4 flex items-center gap-3">
+              <input
+                type="text"
+                value={dockerUrl}
+                onChange={(e) => setDockerUrl(e.target.value)}
+                className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono"
+                placeholder="http://localhost:8080"
+                />
+
+              <button
+                onClick={handleSubmitToDocker}
+                disabled={submitting}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white text-xs font-semibold px-4 py-2 rounded-lg transition"
+              >
+                {submitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3.5 h-3.5" />
+                    Submit to Docker
+                  </>
+                )}
+              </button>
+              </div>
             </div>
         </div>
         
@@ -134,15 +232,15 @@ export const EvaluationView: React.FC = () => {
              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                  <div className="text-[11px] font-semibold text-blue-700">Stage-1 Macro F1</div>
-                 <div className="text-xl font-bold text-blue-900 mt-0.5">{scoringResult.stage1_macro_f1 ?? "N/A"}</div>
+                 <div className="text-xl font-bold text-blue-900 mt-0.5">{scoringResult.stage1?.macro_f1 ?? "N/A"}</div>
                </div>
                <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
                  <div className="text-[11px] font-semibold text-indigo-700">Stage-3 Defect F1</div>
-                 <div className="text-xl font-bold text-indigo-900 mt-0.5">{scoringResult.stage3_defect_f1 ?? "N/A"}</div>
+                 <div className="text-xl font-bold text-indigo-900 mt-0.5">{scoringResult.stage3?.defect_f1 ?? "N/A"}</div>
                </div>
                <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
                  <div className="text-[11px] font-semibold text-purple-700">End-to-End Accuracy</div>
-                 <div className="text-xl font-bold text-purple-900 mt-0.5">{scoringResult.end_to_end_accuracy ?? "N/A"}</div>
+                 <div className="text-xl font-bold text-purple-900 mt-0.5">{scoringResult.end_to_end?.rate ?? "N/A"}</div>
                </div>
                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
                  <div className="text-[11px] font-semibold text-emerald-700">Composite Score</div>
@@ -157,21 +255,35 @@ export const EvaluationView: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
         <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-4">Evaluation Case Review</h3>
         <div className="space-y-2">
-          {datasetProvider.getCases()
-            .filter((c) => c.hasDefect || c.verificationStatus === "NEEDS_REVIEW")
-            .slice(0, 5)
+          {sdocResult?.cases
+            .filter(
+            (c) =>
+              c.verification?.status === "MISMATCH" ||
+              c.verification?.status === "NEEDS_REVIEW"
+            )
+            .slice(0, 4)
             .map((c) => (
-              <div key={c.id} className="border border-slate-200 rounded-lg p-3 flex justify-between items-center">
-                <div>
-                  <div className="text-xs font-bold text-slate-900">{c.shipmentReference}</div>
-                  <div className="text-[11px] text-slate-500">{c.emailSubject}</div>
+            <div
+              key={c.email.email_id}
+              className="border border-slate-200 rounded-lg p-3 flex justify-between items-center"
+            >
+              <div>
+                <div className="text-xs font-bold text-slate-900">
+                  {c.email.email_id}
                 </div>
-                <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-1 rounded">{c.verificationStatus}</span>
+                <div className="text-[11px] text-slate-500">
+                  {c.email.subject}
+                </div>
               </div>
-            ))}
+
+              <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-1 rounded">
+                {c.verification?.status}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
-
+      
       {/* JSON Viewer */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
         <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
