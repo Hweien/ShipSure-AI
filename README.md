@@ -752,7 +752,7 @@ https://shipsure-ai-4.onrender.com/
 
 ## Team
 
-**Team:** `<PentaQueens>`
+**Team:** `PentaQueens`
 
 **Project:** ShipSure AI
 
