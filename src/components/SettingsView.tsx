@@ -18,7 +18,7 @@ interface SettingsViewProps {
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ onRefreshData }) => {
-  const [dataSource, setDataSource] = useState<"DEMO" | "LOCAL" | "DOCKER">("DEMO");
+  const [dataSource, setDataSource] = useState<"DEMO" | "LOCAL" | "DOCKER">("DOCKER");
   const [dataPath, setDataPath] = useState("./data");
   const [dataApiUrl, setDataApiUrl] = useState("http://localhost:8080");
   const [serverHealth, setServerHealth] = useState<any>(null);
@@ -27,12 +27,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onRefreshData }) => 
 
   const fetchHealth = async () => {
     setTestingHealth(true);
+
     try {
-      const res = await fetch("/api/health");
-      const data = await res.json();
+      const res =
+        await fetch("/api/health");
+
+      const data =
+        await res.json();
+
       setServerHealth(data);
+
+      // Keep Settings UI synchronized
+      // with the actual backend configuration.
+      if (data?.config?.dataSource) {
+        setDataSource(
+          data.config.dataSource
+        );
+      }
+
+      if (data?.config?.dataPath) {
+        setDataPath(
+          data.config.dataPath
+        );
+      }
+
+      if (data?.config?.dataApiUrl) {
+        setDataApiUrl(
+          data.config.dataApiUrl
+        );
+      }
     } catch {
-      setServerHealth({ status: "offline", hasGeminiKey: false });
+      setServerHealth({
+        status:
+          "offline",
+
+        hasGeminiKey:
+          false
+      });
     } finally {
       setTestingHealth(false);
     }
