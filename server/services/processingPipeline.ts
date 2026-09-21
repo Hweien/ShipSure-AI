@@ -506,6 +506,10 @@ export async function processEmailPipeline(
       }
     );
 
+    // Normalize SI and BL before verification
+    normalizeDocumentFields(siData);
+    normalizeDocumentFields(blData);
+
     console.log(
     `[Pipeline ${email.email_id}] 6. Running verification`
     );

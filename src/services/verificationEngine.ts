@@ -202,13 +202,20 @@ export function verifyDocuments(
     let matchStatus: FieldMatchStatus = "MISMATCH";
     let notes = "";
 
-    if (field === "container_count" || field === "gross_weight_kg") {
+    if (field === "gross_weight_kg") {
       const numSi = Number(siField.normalized);
       const numBl = Number(blField.normalized);
 
       if (numSi === numBl) {
-        matchStatus = String(siField.raw).trim() === String(blField.raw).trim() ? "EXACT_MATCH" : "NORMALIZED_MATCH";
-        notes = matchStatus === "EXACT_MATCH" ? "Exact numeric equality" : "Normalized unit equality (e.g. MT to KG)";
+        matchStatus =
+          String(siField.raw).trim() === String(blField.raw).trim()
+            ? "EXACT_MATCH"
+            : "NORMALIZED_MATCH";
+
+        notes =
+          matchStatus === "EXACT_MATCH"
+            ? "Exact numeric equality"
+            : "Normalized unit equality (e.g. MT to KG)";
       } else {
         matchStatus = "MISMATCH";
         const diff = numBl - numSi;
