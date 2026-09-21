@@ -2,16 +2,22 @@
 
 The Evaluation View uses the official SDOC Docker server for dataset access and evaluation.
 
-1. Start the SDOC Docker Server
+### 1. Start the SDOC Docker Server
 
 Open a terminal and navigate to the SDOC Docker directory:
+
 ```powershell
 cd ".\datasets\sdoc-hackathon-docker"
+```
+
 Start the Docker services:
+
 ```powershell
 docker compose up
+```
 
-2. Process the provided dataset 
+### 2. Process the Provided Dataset
+
 **Step 1:** Click **Process Real Dataset**
 
 **Output:**
