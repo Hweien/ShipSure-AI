@@ -14,6 +14,21 @@ import { orchestrateCase } from "./server/services/orchestrator";
 import { JsonAuditRepository } from "./server/services/auditRepository";
 import { caseRepository } from "./server/services/caseRepository";
 import { processEmailPipeline } from "./server/services/processingPipeline";
+import {
+  verifyDocuments,
+} from "./src/services/verificationEngine";
+
+import {
+  normalizeContainerCount,
+  normalizeEntityName,
+  normalizeGrossWeight,
+  normalizePort,
+} from "./src/services/normalization";
+
+import type {
+  ComparisonField,
+  ExtractedDocumentFields,
+} from "./src/types";
 
 dotenv.config();
 
@@ -408,6 +423,76 @@ async function loadProcessedState() {
       );
     }
   }
+}
+
+function normalizeHumanOverride(
+  field: ComparisonField,
+  value: string
+): string | number {
+  switch (field) {
+    case "container_count":
+      return normalizeContainerCount(
+        value
+      ).normalized;
+
+    case "gross_weight_kg":
+      return normalizeGrossWeight(
+        value
+      ).normalized;
+
+    case "port_of_loading":
+    case "port_of_discharge":
+      return normalizePort(
+        value
+      ).normalized;
+
+    case "shipper":
+    case "consignee":
+    case "notify_party":
+      return normalizeEntityName(
+        value
+      ).normalized;
+  }
+}
+
+function applyHumanOverride(
+  document:
+    ExtractedDocumentFields,
+  field: ComparisonField,
+  value: string
+): ExtractedDocumentFields {
+  const updated =
+    JSON.parse(
+      JSON.stringify(document)
+    ) as ExtractedDocumentFields;
+
+  updated.fields[field] = {
+    ...updated.fields[field],
+
+    raw: value,
+
+    normalized:
+      normalizeHumanOverride(
+        field,
+        value
+      ),
+
+    confidence: 1,
+
+    snippet:
+      `Human-reviewed value: ${value}`,
+  };
+
+  updated.unreadableFields =
+    (
+      updated.unreadableFields ??
+      []
+    ).filter(
+      (item) =>
+        item !== field
+    );
+
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,6 +1197,511 @@ app.post("/api/cases", (req, res) => {
   const saved = caseRepository.save(shipmentCase);
   return res.status(201).json(saved);
 });
+
+app.post(
+  "/api/cases/:id/review",
+  async (req, res) => {
+    try {
+      const caseId =
+        req.params.id;
+
+      const shipmentCase =
+        caseRepository.getById(
+          caseId
+        );
+
+      if (!shipmentCase) {
+        return res
+          .status(404)
+          .json({
+            error:
+              "Shipment case not found.",
+          });
+      }
+
+      const {
+        reviewer,
+        approvedStatus,
+        comments,
+        manualOverride,
+      } = req.body || {};
+
+      // -----------------------------------------
+      // Validate human decision
+      // -----------------------------------------
+
+      if (
+        typeof reviewer !==
+          "string" ||
+        !reviewer.trim()
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "reviewer is required.",
+          });
+      }
+
+      if (
+        approvedStatus !== "OK" &&
+        approvedStatus !==
+          "MISMATCH"
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "approvedStatus must be OK or MISMATCH.",
+          });
+      }
+
+      const validFields:
+        ComparisonField[] = [
+          "shipper",
+          "consignee",
+          "notify_party",
+          "port_of_loading",
+          "port_of_discharge",
+          "container_count",
+          "gross_weight_kg",
+        ];
+
+      let effectiveSi =
+        shipmentCase.siData;
+
+      let effectiveBl =
+        shipmentCase.blData;
+
+      let reverification:
+        ReturnType<
+          typeof verifyDocuments
+        > | null = null;
+
+      // -----------------------------------------
+      // Optional manual field correction
+      // -----------------------------------------
+
+      if (manualOverride) {
+        const {
+          field,
+          documentType,
+          value,
+        } = manualOverride;
+
+        if (
+          !validFields.includes(
+            field
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "Invalid override field.",
+            });
+        }
+
+        if (
+          documentType !==
+            "SI" &&
+          documentType !==
+            "BL"
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "documentType must be SI or BL.",
+            });
+        }
+
+        if (
+          typeof value !==
+            "string" ||
+          !value.trim()
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "Override value is required.",
+            });
+        }
+
+        if (
+          documentType === "SI"
+        ) {
+          if (!effectiveSi) {
+            return res
+              .status(400)
+              .json({
+                error:
+                  "Cannot override SI because no SI extraction exists.",
+              });
+          }
+
+          effectiveSi =
+            applyHumanOverride(
+              effectiveSi,
+              field,
+              value.trim()
+            );
+        } else {
+          if (!effectiveBl) {
+            return res
+              .status(400)
+              .json({
+                error:
+                  "Cannot override BL because no BL extraction exists.",
+              });
+          }
+
+          effectiveBl =
+            applyHumanOverride(
+              effectiveBl,
+              field,
+              value.trim()
+            );
+        }
+
+        // ---------------------------------------
+        // Rerun deterministic DS2 verification
+        // using EFFECTIVE copies.
+        //
+        // Original AI extraction remains intact.
+        // ---------------------------------------
+
+        if (
+          effectiveSi &&
+          effectiveBl
+        ) {
+          reverification =
+            verifyDocuments(
+              effectiveSi,
+              effectiveBl,
+              {
+                hasSi: true,
+                hasBl: true,
+              }
+            );
+        }
+      }
+
+      const timestamp =
+        new Date().toISOString();
+
+      // -----------------------------------------
+      // Final status
+      //
+      // If deterministic verification can now
+      // reach OK/MISMATCH, use that.
+      //
+      // Otherwise the human-approved status is
+      // authoritative.
+      // -----------------------------------------
+
+      const finalStatus =
+        reverification &&
+        reverification.status !==
+          "NEEDS_REVIEW"
+          ? reverification.status
+          : approvedStatus;
+
+      const finalHasDefect =
+        finalStatus ===
+        "MISMATCH";
+
+      let finalDefectFields =
+        shipmentCase.defectFields ??
+        [];
+
+      if (reverification) {
+        finalDefectFields =
+          reverification.defectFields;
+      }
+
+      if (
+        finalStatus === "OK"
+      ) {
+        finalDefectFields = [];
+      }
+
+      // -----------------------------------------
+      // Update real ShipmentCase
+      // -----------------------------------------
+
+      const updatedCase = {
+        ...shipmentCase,
+
+        verificationStatus:
+          finalStatus,
+
+        hasDefect:
+          finalHasDefect,
+
+        defectFields:
+          finalDefectFields,
+
+        reviewReason: null,
+
+        humanReviewed: true,
+
+        humanReviewDecision: {
+          reviewer:
+            reviewer.trim(),
+
+          timestamp,
+
+          approvedStatus:
+            finalStatus,
+
+          manualOverrides:
+            manualOverride
+              ? {
+                  [manualOverride.field]:
+                    manualOverride.value,
+                }
+              : undefined,
+
+          comments:
+            comments?.trim() ||
+            `Human review resolved as ${finalStatus}.`,
+        },
+
+        fieldComparisons:
+          reverification
+            ?.fieldComparisons ??
+          shipmentCase
+            .fieldComparisons,
+
+        timeline: [
+          ...(
+            shipmentCase.timeline ??
+            []
+          ),
+
+          {
+            id:
+              `T-HUMAN-${Date.now()}`,
+
+            timestamp,
+
+            agent:
+              "Human Reviewer" as const,
+
+            action:
+              "Human Review Decision",
+
+            summary:
+              `${reviewer.trim()} resolved the case as ${finalStatus}.`,
+
+            status:
+              finalStatus ===
+              "OK"
+                ? "success" as const
+                : "warning" as const,
+
+            details: {
+              originalStatus:
+                shipmentCase
+                  .verificationStatus,
+
+              approvedStatus,
+
+              finalStatus,
+
+              manualOverride:
+                manualOverride ??
+                null,
+
+              reverificationStatus:
+                reverification
+                  ?.status ??
+                null,
+
+              comments:
+                comments ??
+                "",
+            },
+          },
+        ],
+
+        decisions: [
+          ...(
+            shipmentCase.decisions ??
+            []
+          ),
+
+          {
+            id:
+              `DEC-HUMAN-${Date.now()}`,
+
+            caseId:
+              shipmentCase.id,
+
+            emailId:
+              shipmentCase.emailId,
+
+            agent:
+              "Human Reviewer",
+
+            decision:
+              `Human review resolved case as ${finalStatus}`,
+
+            siValue:
+              manualOverride
+                ?.documentType ===
+              "SI"
+                ? manualOverride.value
+                : undefined,
+
+            blValue:
+              manualOverride
+                ?.documentType ===
+              "BL"
+                ? manualOverride.value
+                : undefined,
+
+            evidenceSnippet:
+              comments ||
+              "Human operator decision",
+
+            confidence:
+              "HUMAN_CONFIRMED",
+
+            validationStatus:
+              "Overridden" as const,
+
+            humanInterventionRequired:
+              false,
+
+            timestamp,
+          },
+        ],
+      };
+
+      // -----------------------------------------
+      // Save backend repository
+      // -----------------------------------------
+
+      caseRepository.save(
+        updatedCase
+      );
+
+      // -----------------------------------------
+      // IMPORTANT:
+      // Update persistent processed-email cache.
+      //
+      // Otherwise server restart would restore
+      // the OLD NEEDS_REVIEW case.
+      // -----------------------------------------
+
+      const cached =
+        processedEmailCache[
+          shipmentCase.emailId
+        ];
+
+      if (cached) {
+        cached.case =
+          updatedCase;
+
+        cached.processedAt =
+          timestamp;
+
+        await saveProcessedEmailCache();
+      }
+
+      // -----------------------------------------
+      // Add structured agent/audit event
+      // -----------------------------------------
+
+      await auditRepository.append([
+        {
+          id:
+            `${caseId}-${Date.now()}-human-review`,
+
+          caseId,
+
+          shipmentReference:
+            shipmentCase
+              .shipmentReference,
+
+          agent:
+            "critic",
+
+          action:
+            "human_review_resolved",
+
+          status:
+            "completed",
+
+          summary:
+            `Human reviewer ${reviewer.trim()} resolved the case as ${finalStatus}.`,
+
+          evidence: {
+            originalStatus:
+              shipmentCase
+                .verificationStatus,
+
+            finalStatus,
+
+            manualOverride:
+              manualOverride ??
+              null,
+
+            reverificationStatus:
+              reverification
+                ?.status ??
+              null,
+          },
+
+          timestamp,
+        },
+      ]);
+
+      return res.json({
+        success: true,
+
+        case: updatedCase,
+
+        reverification:
+          reverification
+            ? {
+                status:
+                  reverification.status,
+
+                hasDefect:
+                  reverification.hasDefect,
+
+                defectFields:
+                  reverification
+                    .defectFields,
+
+                explanation:
+                  reverification
+                    .explanation,
+              }
+            : null,
+      });
+    } catch (error: any) {
+      console.error(
+        "Human review failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          error:
+            error?.message ||
+            "Human review failed.",
+        });
+    }
+  }
+);
 
 app.post(
   "/api/pipeline/process/:emailId",
