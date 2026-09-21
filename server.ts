@@ -2576,18 +2576,25 @@ app.post("/api/evaluation/submit", async (req, res) => {
 });
 
 async function startServer() {
-  await loadProcessedState();
-
+  // Start the web server first so Render can reach /api/health
+  // immediately instead of waiting for the large baseline cache.
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
+
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
+
     app.use(express.static(distPath));
-    app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
+
+    app.get("*", (_req, res) =>
+      res.sendFile(
+        path.join(distPath, "index.html")
+      )
+    );
   }
 
   app.listen(
@@ -2598,16 +2605,31 @@ async function startServer() {
         `ShipSure AI listening on 0.0.0.0:${PORT}`
       );
 
+      // Load the large baseline cache AFTER the server
+      // is already listening.
+      void loadProcessedState()
+        .then(() => {
+          console.log(
+            "[Pipeline Cache] Startup cache loading complete."
+          );
+        })
+        .catch((error) => {
+          console.error(
+            "[Pipeline Cache] Startup cache loading failed:",
+            error
+          );
+        });
+
       if (
         process.env
           .AUTO_PROCESS_NEW_EMAILS ===
-          "true"
+        "true"
       ) {
         const intervalMs =
           Number(
             process.env
               .INBOX_POLL_INTERVAL_MS ||
-              60000
+            60000
           );
 
         console.log(
