@@ -384,8 +384,16 @@ async function loadProcessedState() {
         "utf8"
       );
 
+    const cleanContent =
+      content.replace(
+        /^\uFEFF/,
+        ""
+      );
+
     const existingCases =
-      JSON.parse(content);
+      JSON.parse(
+        cleanContent
+      );
 
     if (
       Array.isArray(
@@ -1396,16 +1404,25 @@ async function processNewEmails():
           email.email_id
         ];
 
+      // ----------------------------------
       // Already permanently cached
+      // ----------------------------------
       if (
         cached &&
         cached.fingerprint ===
           fingerprint
       ) {
+        // Only old pipeline-v1 missing-value
+        // cases need one-time reprocessing.
         const needsReprocessing =
-          cached.case.verificationStatus === "NEEDS_REVIEW" &&
-          cached.case.reviewReason === "missing_value";
-          cached.processingVersion === "pipeline-v1";
+          cached.processingVersion ===
+            "pipeline-v1" &&
+          cached.case
+            .verificationStatus ===
+            "NEEDS_REVIEW" &&
+          cached.case
+            .reviewReason ===
+            "missing_value";
 
         if (!needsReprocessing) {
           caseRepository.save(
@@ -1414,14 +1431,14 @@ async function processNewEmails():
 
           pipelineRunState.skipped++;
 
-        continue;
+          continue;
+        }
       }
-    }
 
       // --------------------------------
       // One-time migration:
-      // case existed before we added
-      // persistent caching.
+      // case existed before persistent
+      // caching was introduced.
       // --------------------------------
       const existingCase =
         caseRepository
@@ -1461,36 +1478,50 @@ async function processNewEmails():
         email,
         fingerprint,
       });
-    }
+      }
 
-    if (
-      pipelineRunState.skipped >
-      0
-    ) {
-      await saveProcessedEmailCache();
-    }
+      // Save any cache migration changes.
+      if (
+        pipelineRunState.skipped >
+        0
+      ) {
+        await saveProcessedEmailCache();
+      }
 
-    console.log(
-      `[Pipeline] Inbox total: ${emails.length}`
-    );
+      // --------------------------------------------------
+      // No new/changed emails:
+      // watcher keeps running, but terminal stays silent.
+      // --------------------------------------------------
+      if (queue.length === 0) {
+        return;
+      }
 
-    console.log(
-      `[Pipeline] Already processed: ${pipelineRunState.skipped}`
-    );
+      // --------------------------------------------------
+      // Only show logs when actual work exists.
+      // --------------------------------------------------
+      console.log(
+        `[Pipeline] Detected ${queue.length} new/changed email(s)`
+      );
 
-    console.log(
-      `[Pipeline] New/changed: ${queue.length}`
-    );
+      console.log(
+        `[Pipeline] Inbox total: ${emails.length}`
+      );
 
-    const MAX_AUTO_PROCESS = 3;
+      console.log(
+        `[Pipeline] Already processed: ${pipelineRunState.skipped}`
+      );
 
-    const processingQueue =
-      queue.slice(0, MAX_AUTO_PROCESS);
+      const MAX_AUTO_PROCESS = 3;
 
-    console.log(
-      `[Pipeline] Processing this run: ${processingQueue.length}`
-    );
+      const processingQueue =
+        queue.slice(
+          0,
+          MAX_AUTO_PROCESS
+        );
 
+      console.log(
+        `[Pipeline] Processing this run: ${processingQueue.length}`
+      );
     // ----------------------------------
     // Only new/changed emails enter
     // Gemini / DS1 / DS2.
