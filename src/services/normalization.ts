@@ -158,3 +158,31 @@ export function normalizeGrossWeight(raw: string | number): NormalizedFieldResul
     isNormalized: str !== `${normalizedKg} KG`
   };
 }
+
+/**
+ * Normalize a field based on its comparison type
+ */
+export function normalizeField(
+  field: ComparisonField,
+  value: string
+): string | number | null {
+  switch (field) {
+    case "shipper":
+    case "consignee":
+    case "notify_party":
+      return normalizeEntityName(value).normalized;
+
+    case "port_of_loading":
+    case "port_of_discharge":
+      return normalizePort(value).normalized;
+
+    case "container_count":
+      return normalizeContainerCount(value).normalized;
+
+    case "gross_weight_kg":
+      return normalizeGrossWeight(value).normalized;
+
+    default:
+      return value.trim().toUpperCase();
+  }
+}

@@ -12,13 +12,7 @@ import {
   SingleFieldComparison,
   VerificationStatus
 } from "../types";
-import {
-  normalizeContainerCount,
-  normalizeEntityName,
-  normalizeGrossWeight,
-  normalizePort
-} from "./normalization";
-
+import { normalizeField } from "./normalization";
 export interface VerificationResult {
   status: VerificationStatus;
   hasDefect: boolean;
@@ -95,6 +89,19 @@ export function verifyDocuments(
     const blField = bl.fields[field];
 
     const label = FIELD_LABELS[field];
+    const siRaw = String(siField?.raw ?? "").trim();
+    const blRaw = String(blField?.raw ?? "").trim();
+
+    const siNormalized = siRaw
+      ? normalizeField(field, siRaw)
+      : null;
+
+    const blNormalized = blRaw
+      ? normalizeField(field, blRaw)
+      : null;
+
+    const siMissing = !siRaw;
+    const blMissing = !blRaw;
 
     // Check if field was unreadable in either document
     if (
@@ -130,31 +137,37 @@ export function verifyDocuments(
     }
 
     // Check if either is completely missing
-    if (!siField || !blField || siField.normalized === undefined || blField.normalized === undefined) {
+    if (!siField || !blField || siMissing || blMissing)
+    {
       missingValueDetected = true;
       fieldComparisons.push({
         field,
         label,
         siEvidence: siField
           ? {
-              documentType: "SI",
-              originalValue: String(siField.raw || ""),
-              normalizedValue: siField.normalized ?? "",
-              snippet: siField.snippet,
-              confidence: "MEDIUM"
+            documentType: "SI",
+            originalValue: String(siField.raw || ""),
+            normalizedValue: siNormalized == null ? "" : String(siNormalized),
+            snippet: siField.snippet,
+            confidence: "MEDIUM"
             }
           : null,
+
         blEvidence: blField
           ? {
-              documentType: "BL",
-              originalValue: String(blField.raw || ""),
-              normalizedValue: blField.normalized ?? "",
-              snippet: blField.snippet,
-              confidence: "MEDIUM"
+            documentType: "BL",
+            originalValue: String(blField.raw || ""),
+            normalizedValue: blNormalized == null ? "" : String(blNormalized),
+            snippet: blField.snippet,
+            confidence: "MEDIUM"
             }
           : null,
         status: "NEEDS_REVIEW",
-        notes: `Field value missing in ${!siField ? "Shipping Instruction (SI)" : "Draft Bill of Lading (BL)"}`
+        notes: `Field value missing in ${
+          !siField || siMissing
+            ? "Shipping Instruction (SI)"
+            : "Draft Bill of Lading (BL)"
+        }`
       });
       continue;
     }
@@ -164,8 +177,8 @@ export function verifyDocuments(
     let notes = "";
 
     if (field === "container_count" || field === "gross_weight_kg") {
-      const numSi = Number(siField.normalized);
-      const numBl = Number(blField.normalized);
+      const numSi = Number(siNormalized);
+      const numBl = Number(blNormalized);
 
       if (numSi === numBl) {
         matchStatus = String(siField.raw).trim() === String(blField.raw).trim() ? "EXACT_MATCH" : "NORMALIZED_MATCH";
@@ -180,8 +193,8 @@ export function verifyDocuments(
       // String / Entity / Port comparison
       const rawSi = String(siField.raw || "").trim();
       const rawBl = String(blField.raw || "").trim();
-      const normSi = String(siField.normalized || "").trim();
-      const normBl = String(blField.normalized || "").trim();
+      const normSi = String(siNormalized || "").trim();
+      const normBl = String(blNormalized || "").trim();
 
       if (rawSi.toUpperCase() === rawBl.toUpperCase()) {
         matchStatus = "EXACT_MATCH";
@@ -202,14 +215,14 @@ export function verifyDocuments(
       siEvidence: {
         documentType: "SI",
         originalValue: String(siField.raw),
-        normalizedValue: siField.normalized,
+        normalizedValue: siNormalized == null ? "" : String(siNormalized),
         snippet: siField.snippet,
         confidence: "HIGH"
       },
       blEvidence: {
         documentType: "BL",
         originalValue: String(blField.raw),
-        normalizedValue: blField.normalized ?? "",
+        normalizedValue: blNormalized == null ? "" : String(blNormalized),
         snippet: blField.snippet,
         confidence: "HIGH"
       },
