@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import shipsureLogo from "../assets/shipsure-logo.svg";
 import {
   Search,
   Calendar,
@@ -78,7 +79,7 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2.5">
           <img
-            src="/shipsure-logo.svg"
+            src={shipsureLogo}
             alt="ShipSure AI logo"
             className="w-10 h-10 object-contain"
           />
