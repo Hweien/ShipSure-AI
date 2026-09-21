@@ -988,7 +988,10 @@ app.get("/api/dataset/emails", async (_req, res) => {
     }
     return res.json([]);
   } catch (error: any) {
-    return res.status(502).json({ error: `Dataset read failed: ${error.message}` });
+    return res.status(502).json({ error: `Dataset read failed: ${error.message}` 
+    });
+  }
+});
 // DS2 - Compare SI and BL
 app.post("/api/ds2/compare", async (req, res) => {
   try {
