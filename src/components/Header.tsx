@@ -11,6 +11,7 @@ import {
 import { GlobalDateFilter } from "../types";
 import { interpretNaturalLanguageQuery, InterpretedSearchQuery } from "../services/agents";
 
+
 interface HeaderProps {
   currentDateFilter: GlobalDateFilter;
   onDateFilterChange: (filter: GlobalDateFilter) => void;
@@ -20,6 +21,7 @@ interface HeaderProps {
   onSearch: (interpreted: InterpretedSearchQuery | null) => void;
   onNavigate: (tab: string) => void;
 }
+
 
 export const Header: React.FC<HeaderProps> = ({
   currentDateFilter,
@@ -32,6 +34,11 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [searchInput, setSearchInput] = useState("");
   const [interpretedQuery, setInterpretedQuery] = useState<InterpretedSearchQuery | null>(null);
+
+
+  const todayLabel = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+  const todayISO = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
+
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -46,6 +53,7 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && interpretedQuery) {
       e.preventDefault();
@@ -53,23 +61,27 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
+
   const clearSearch = () => {
     setSearchInput("");
     setInterpretedQuery(null);
     onSearch(null);
   };
 
+
   return (
     <header
       id="shipsure-header"
-      className="h-16 bg-white border-b border-slaSte-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs"
+      className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs"
     >
       {/* Left: Brand Identity */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-lg bg-blue-700 text-white flex items-center justify-center font-bold text-lg shadow-sm">
-            SS
-          </div>
+          <img
+            src="/shipsure-logo.svg"
+            alt="ShipSure AI logo"
+            className="w-10 h-10 object-contain"
+          />
           <div>
             <div className="flex items-center gap-2">
               <span className="font-bold tracking-tight text-slate-900 text-base">ShipSure-AI</span>
@@ -81,6 +93,7 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
       </div>
+
 
       {/* Center: Natural Language Search with Live Interpreter */}
       <div className="flex-1 max-w-xl mx-8 relative">
@@ -104,6 +117,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
         </div>
+
 
         {/* Live Interpretation Tooltip Banner */}
         {interpretedQuery && (
@@ -133,6 +147,7 @@ export const Header: React.FC<HeaderProps> = ({
         )}
       </div>
 
+
       {/* Right: Date Filter, Priority Action, Copilot Toggle */}
       <div className="flex items-center gap-3">
         {/* Global Date Filter Box */}
@@ -145,13 +160,13 @@ export const Header: React.FC<HeaderProps> = ({
               onDateFilterChange({
                 ...currentDateFilter,
                 preset: e.target.value as any,
-                startDate: e.target.value === "CUSTOM" ? currentDateFilter.startDate || "2026-09-15" : undefined,
-                endDate: e.target.value === "CUSTOM" ? currentDateFilter.endDate || "2026-09-19" : undefined
+                startDate: e.target.value === "CUSTOM" ? currentDateFilter.startDate || todayISO : undefined,
+                endDate: e.target.value === "CUSTOM" ? currentDateFilter.endDate || todayISO : undefined
               })
             }
             className="bg-transparent border-none text-slate-800 focus:outline-none cursor-pointer pr-1"
           >
-            <option value="TODAY">Today (Sep 19)</option>
+            <option value="TODAY">{`Today (${todayLabel})`}</option>
             <option value="YESTERDAY">Yesterday</option>
             <option value="LAST_7_DAYS">Last 7 Days</option>
             <option value="LAST_30_DAYS">Last 30 Days</option>
@@ -160,11 +175,12 @@ export const Header: React.FC<HeaderProps> = ({
             <option value="CUSTOM">Custom Range</option>
           </select>
 
+
           {currentDateFilter.preset === "CUSTOM" && (
             <div className="flex items-center gap-1.5 ml-2 border-l border-slate-200 pl-2">
               <input
                 type="date"
-                value={currentDateFilter.startDate || "2026-09-15"}
+                value={currentDateFilter.startDate || todayISO}
                 onChange={(e) =>
                   onDateFilterChange({
                     ...currentDateFilter,
@@ -176,7 +192,7 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="text-slate-400 text-[10px]">to</span>
               <input
                 type="date"
-                value={currentDateFilter.endDate || "2026-09-19"}
+                value={currentDateFilter.endDate || todayISO}
                 onChange={(e) =>
                   onDateFilterChange({
                     ...currentDateFilter,
@@ -189,6 +205,7 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
+
         {/* Start Priority Case Button */}
         <button
           id="btn-start-priority"
@@ -198,6 +215,7 @@ export const Header: React.FC<HeaderProps> = ({
           <PlayCircle className="w-3.5 h-3.5" />
           <span>Priority Queue</span>
         </button>
+
 
         {/* Multi-Agent Chatbox Toggle */}
         <button
@@ -223,3 +241,4 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
+
