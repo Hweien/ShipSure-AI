@@ -73,7 +73,7 @@ export function orchestrateCase(
   };
 
   // --------------------------------------------------
-  // 1. Orchestrator receives processed case
+  // Orchestrator receives processed case
   // --------------------------------------------------
 
   addEvent({
@@ -97,7 +97,7 @@ export function orchestrateCase(
   });
 
   // --------------------------------------------------
-  // 2. Non-document-comparison emails
+  // Non-document-comparison emails
   // --------------------------------------------------
 
   if (
@@ -122,7 +122,7 @@ export function orchestrateCase(
   }
 
   // --------------------------------------------------
-  // 3. Existing extraction evidence
+  // Existing extraction evidence
   // --------------------------------------------------
 
   addEvent({
@@ -148,14 +148,86 @@ export function orchestrateCase(
     },
 
     handoffTo:
-      "verification",
+      shipmentCase.hasRevision &&
+      shipmentCase.revisionComparison
+        ? "revision"
+        : "verification",
 
     handoffReason:
-      "SI and BL extraction is available for seven-field verification.",
+      shipmentCase.hasRevision &&
+      shipmentCase.revisionComparison
+        ? "A revised BL was detected and requires three-way SI vs BL V1 vs BL V2 analysis."
+        : "SI and BL extraction is available for seven-field verification.",
   });
 
   // --------------------------------------------------
-  // 4. Verification agent
+  // Revision Intelligence Agent
+  // --------------------------------------------------
+
+  if (
+    shipmentCase.hasRevision &&
+    shipmentCase.revisionComparison
+  ) {
+    const revision =
+      shipmentCase.revisionComparison;
+
+    const correctedCount =
+      revision.correctedFields.filter(
+        (field) =>
+          field.status === "CORRECTED"
+      ).length;
+
+    const stillMismatchCount =
+      revision.correctedFields.filter(
+        (field) =>
+          field.status === "STILL_MISMATCH"
+      ).length;
+
+    const unexpectedChangeCount =
+      revision.unexpectedChanges.length;
+
+    addEvent({
+      agent: "revision",
+      action: "review_bl_revision",
+
+      status:
+        revision.overallOutcome === "RESOLVED"
+          ? "completed"
+          : "requires_review",
+
+      summary:
+        revision.overallOutcome === "RESOLVED"
+          ? `BL V2 resolved the previous discrepancies. ${correctedCount} field(s) were corrected.`
+          : `BL V2 requires further review. ${stillMismatchCount} field(s) remain mismatched and ${unexpectedChangeCount} unexpected change(s) were detected.`,
+
+      evidence: {
+        blVersion:
+          shipmentCase.blVersion,
+
+        outcome:
+          revision.overallOutcome,
+
+        correctedFields:
+          revision.correctedFields,
+
+        unexpectedChanges:
+          revision.unexpectedChanges,
+      },
+
+      handoffTo:
+        revision.overallOutcome === "RESOLVED"
+          ? "verification"
+          : "critic",
+
+      handoffReason:
+        revision.overallOutcome === "RESOLVED"
+          ? "BL V2 resolved the revision discrepancies; continue final verification."
+          : "BL V2 contains unresolved or unexpected changes requiring review.",
+    });
+  }
+
+  // --------------------------------------------------
+  // Verification agent
   // --------------------------------------------------
 
   addEvent({
@@ -202,7 +274,7 @@ export function orchestrateCase(
   });
 
   // --------------------------------------------------
-  // 5. Needs human review
+  // Needs human review
   // --------------------------------------------------
 
   if (
@@ -239,7 +311,7 @@ export function orchestrateCase(
   }
 
   // --------------------------------------------------
-  // 6. Confirmed mismatch
+  // Confirmed mismatch
   // --------------------------------------------------
 
   if (
@@ -277,7 +349,7 @@ export function orchestrateCase(
   }
 
   // --------------------------------------------------
-  // 7. Clean case
+  // Clean case
   // --------------------------------------------------
 
   addEvent({

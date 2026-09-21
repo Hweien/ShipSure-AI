@@ -335,11 +335,49 @@ async function loadProcessedState() {
     }
   );
 
-  let loaded = false;
+  let baselineCache: ProcessedEmailCache = {};
+  let runtimeCache: ProcessedEmailCache = {};
 
-  // --------------------------------------------------
-  // 1. Prefer this laptop's runtime cache
-  // --------------------------------------------------
+  // ==================================================
+  // 1. Load shared team baseline FIRST
+  // ==================================================
+  try {
+    const content =
+      await fs.readFile(
+        BASELINE_CACHE_FILE,
+        "utf8"
+      );
+
+    baselineCache =
+      JSON.parse(content);
+
+    console.log(
+      `[Pipeline Cache] Loaded team baseline: ${
+        Object.keys(
+          baselineCache
+        ).length
+      } emails`
+    );
+  } catch (error: any) {
+    if (
+      error?.code !==
+      "ENOENT"
+    ) {
+      console.error(
+        "[Pipeline Cache] Failed to load baseline:",
+        error
+      );
+    } else {
+      console.log(
+        "[Pipeline Cache] No team baseline found"
+      );
+    }
+  }
+
+  // ==================================================
+  // 2. Load this laptop's runtime cache
+  //    Runtime can contain newer emails
+  // ==================================================
   try {
     const content =
       await fs.readFile(
@@ -347,21 +385,20 @@ async function loadProcessedState() {
         "utf8"
       );
 
-    processedEmailCache =
+    runtimeCache =
       JSON.parse(content);
 
-    loaded = true;
-
     console.log(
-      `[Pipeline Cache] Loaded ${
+      `[Pipeline Cache] Loaded runtime cache: ${
         Object.keys(
-          processedEmailCache
+          runtimeCache
         ).length
-      } cached emails`
+      } emails`
     );
   } catch (error: any) {
     if (
-      error?.code !== "ENOENT"
+      error?.code !==
+      "ENOENT"
     ) {
       console.error(
         "[Pipeline Cache] Failed to load runtime cache:",
@@ -370,48 +407,28 @@ async function loadProcessedState() {
     }
   }
 
-  // --------------------------------------------------
-  // 2. New teammate / fresh clone:
-  //    load team baseline
-  // --------------------------------------------------
-  if (!loaded) {
-    try {
-      const content =
-        await fs.readFile(
-          BASELINE_CACHE_FILE,
-          "utf8"
-        );
+  // ==================================================
+  // 3. Merge them
+  //
+  // Baseline provides the shared 520.
+  // Runtime overrides/adds newer local results.
+  // ==================================================
+  processedEmailCache = {
+    ...baselineCache,
+    ...runtimeCache,
+  };
 
-      processedEmailCache =
-        JSON.parse(content);
+  console.log(
+    `[Pipeline Cache] Total available: ${
+      Object.keys(
+        processedEmailCache
+      ).length
+    } emails`
+  );
 
-      loaded = true;
-
-      console.log(
-        `[Pipeline Cache] Loaded team baseline: ${
-          Object.keys(
-            processedEmailCache
-          ).length
-        } emails`
-      );
-
-      // Give this teammate their own runtime copy
-      await saveProcessedEmailCache();
-    } catch (error: any) {
-      if (
-        error?.code !== "ENOENT"
-      ) {
-        console.error(
-          "[Pipeline Cache] Failed to load baseline:",
-          error
-        );
-      }
-    }
-  }
-
-  // --------------------------------------------------
-  // Restore cases into memory
-  // --------------------------------------------------
+  // ==================================================
+  // 4. Restore all cached cases into memory
+  // ==================================================
   for (
     const entry of
     Object.values(
@@ -423,6 +440,18 @@ async function loadProcessedState() {
         entry.case
       );
     }
+  }
+
+  // ==================================================
+  // 5. Create/update this laptop's runtime cache
+  //    using the merged result
+  // ==================================================
+  if (
+    Object.keys(
+      processedEmailCache
+    ).length > 0
+  ) {
+    await saveProcessedEmailCache();
   }
 }
 
@@ -2057,25 +2086,34 @@ async function processNewEmails():
     );
 
 
+    const MAX_AUTO_PROCESS = 5;
+
+    const processingQueue =
+      queue.slice(0, MAX_AUTO_PROCESS);
+
+    console.log(
+      `[Pipeline] Processing this run: ${processingQueue.length}`
+    );
+
     // ----------------------------------
     // Only new/changed emails enter
     // Gemini / DS1 / DS2.
     // ----------------------------------
     for (
       let index = 0;
-      index < queue.length;
+      index < processingQueue.length;
       index++
     ) {
       const {
         email,
         fingerprint,
-      } = queue[index];
+      } = processingQueue[index];
 
       pipelineRunState.currentEmailId =
         email.email_id;
 
       console.log(
-        `[Pipeline] New email ${index + 1}/${queue.length}: ${email.email_id}`
+        `[Pipeline] New email ${index + 1}/${processingQueue.length}: ${email.email_id}`
       );
 
       try {
