@@ -5,5 +5,8 @@ coverage/
 runtime/
 .DS_Store
 *.log
+.env
 .env*
 !.env.example
+
+datasets/sdoc-hackathon-docker/data_v2/ground_truth.json
