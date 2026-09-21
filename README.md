@@ -745,7 +745,7 @@ The feature is disabled by default for the official SDOC evaluation workflow.
 Add the preliminary-round demo link here once available:
 
 ```text
-Google Drive: https://drive.google.com/file/d/1orDcQkd0uFHv5LhkXrGcDH8ANI_DK40W/view?usp=drive_link
+https://shipsure-ai-4.onrender.com/
 ```
 
 ---
