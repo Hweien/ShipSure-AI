@@ -97,10 +97,30 @@ class DatasetService {
     };
     targetCase.verificationStatus = decision.approvedStatus;
 
+    if (decision.manualOverrides) {
+      Object.entries(decision.manualOverrides).forEach(([fieldKey, overrideVal]) => {
+        const fieldComp = targetCase.fieldComparisons.find((f) => f.field === fieldKey);
+        if (fieldComp) {
+          fieldComp.status = decision.approvedStatus === "OK" ? "EXACT_MATCH" : "MISMATCH";
+          if (fieldComp.blEvidence) {
+            fieldComp.blEvidence.originalValue = String(overrideVal);
+            fieldComp.blEvidence.normalizedValue = overrideVal;
+            fieldComp.blEvidence.confidence = "HIGH";
+          }
+          fieldComp.notes = `Human verified by ${decision.reviewer}: "${decision.comments}"`;
+        }
+      });
+    }
+
     if (decision.approvedStatus === "OK") {
       targetCase.hasDefect = false;
       targetCase.defectFields = [];
       targetCase.reviewReason = null;
+    }
+
+    // FIX: Mark revision outcome as RESOLVED so it leaves the review queue
+    if (targetCase.revisionComparison) {
+      targetCase.revisionComparison.overallOutcome = "RESOLVED";
     }
 
     targetCase.timeline.unshift({
@@ -108,7 +128,7 @@ class DatasetService {
       timestamp: new Date().toLocaleTimeString(),
       agent: "Human Reviewer",
       action: "Manual Case Override",
-      summary: `Reviewer ${decision.reviewer} confirmed status '${decision.approvedStatus}'`,
+      summary: `Reviewer ${decision.reviewer} resolved case with status '${decision.approvedStatus}'`,
       status: "success"
     });
 

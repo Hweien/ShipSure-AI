@@ -46,6 +46,12 @@ export type FieldMatchStatus =
   | "MISMATCH" 
   | "NEEDS_REVIEW";
 
+export type DocumentType =
+  | "SI"
+  | "BL"
+  | "OTHER"
+  | "UNKNOWN";
+
 export interface FieldEvidence {
   documentType: "SI" | "BL";
   originalLabel?: string;
@@ -72,34 +78,84 @@ export interface EmailRecord {
   recipient?: string;
   to?: string;
   subject: string;
-  date: string;
+  date?: string;
   body: string;
   attachments: string[];
+}
+
+// type for the result produced by the classifier
+export interface EmailClassificationResult {
+  email_id: string;
+  category: EmailCategory;
+  confidence: number;
+  evidence: string;
+}
+
+export interface DocumentIdentificationResult {
+  path: string;
+  documentType: DocumentType;
+  confidence: number;
+  evidence?: string;
+}
+
+export interface ReadDocumentResult {
+  path: string;
+
+  fileType:
+    | "txt"
+    | "pdf"
+    | "doc"
+    | "docx"
+    | "xlsx"
+    | "png"
+    | "jpg"
+    | "jpeg";
+
+  content: string;
+
+  unreadable?: boolean;
+
+  readError?: string;
 }
 
 export interface AttachmentContent {
   path: string;
   filename: string;
-  fileType: "txt" | "pdf" | "doc" | "xlsx";
+  fileType: "txt" | "pdf" | "doc" | "docx" | "xlsx" | "png" | "jpg" | "jpeg";
   text?: string;
   sizeBytes?: number;
 }
 
+export interface ExtractedField {
+  raw: string | null;
+
+  // Added later by the normalization stage
+  normalized?: string | number;
+
+  confidence?: number;
+  snippet?: string;
+}
+
 export interface ExtractedDocumentFields {
   documentType: "SI" | "BL";
+
   documentNumber?: string;
+
   rawText?: string;
+
   fields: {
-    shipper?: { raw: string; normalized: string; snippet?: string };
-    consignee?: { raw: string; normalized: string; snippet?: string };
-    notify_party?: { raw: string; normalized: string; snippet?: string };
-    port_of_loading?: { raw: string; normalized: string; snippet?: string };
-    port_of_discharge?: { raw: string; normalized: string; snippet?: string };
-    container_count?: { raw: string; normalized: number; snippet?: string };
-    gross_weight_kg?: { raw: string; normalized: number; unit?: string; snippet?: string };
+    shipper: ExtractedField;
+    consignee: ExtractedField;
+    notify_party: ExtractedField;
+    port_of_loading: ExtractedField;
+    port_of_discharge: ExtractedField;
+    container_count: ExtractedField;
+    gross_weight_kg: ExtractedField;
   };
+
   unreadableFields?: string[];
-  extractionConfidence: "HIGH" | "MEDIUM" | "LOW";
+
+  extractionConfidence: number | "LOW" | "MEDIUM" | "HIGH";
 }
 
 export interface CaseTimelineEvent {

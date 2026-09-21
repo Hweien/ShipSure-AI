@@ -1,133 +1,373 @@
-import { ShipmentCase } from "../../src/types";
+import type { ShipmentCase } from "../../src/types";
 
-export type BackendAgentId =
+export type AgentId =
   | "orchestrator"
-  | "inbox"
-  | "document"
+  | "extraction"
   | "verification"
   | "critic"
-  | "resolution"
   | "revision"
-  | "analytics";
+  | "resolution"
+  | "watchdog";
+
+export type AgentEventStatus =
+  | "started"
+  | "completed"
+  | "requires_review";
 
 export interface AgentEvent {
   id: string;
   caseId: string;
-  agent: BackendAgentId;
+  shipmentReference?: string;
+
+  agent: AgentId;
   action: string;
-  status: "queued" | "running" | "completed" | "needs_review" | "failed";
+  status: AgentEventStatus;
+
   summary: string;
+
   evidence?: Record<string, unknown>;
+
+  handoffTo?: AgentId;
+  handoffReason?: string;
+
   timestamp: string;
 }
 
-function event(
-  caseObj: ShipmentCase,
-  agent: BackendAgentId,
-  action: string,
-  status: AgentEvent["status"],
-  summary: string,
-  evidence?: Record<string, unknown>,
-): AgentEvent {
-  return {
-    id: `${caseObj.id}-${agent}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    caseId: caseObj.id,
-    agent,
-    action,
-    status,
-    summary,
-    evidence,
-    timestamp: new Date().toISOString(),
-  };
+function eventId(
+  caseId: string,
+  index: number
+) {
+  return `${caseId}-${Date.now()}-${index}`;
 }
 
-/**
- * Structured orchestration only. This intentionally records decisions,
- * evidence, and hand-offs rather than hidden chain-of-thought.
- */
-export function orchestrateCase(caseObj: ShipmentCase): AgentEvent[] {
-  const events: AgentEvent[] = [
-    event(
-      caseObj,
-      "orchestrator",
-      "Route case",
-      "completed",
-      `Routed ${caseObj.shipmentReference} using category ${caseObj.category}.`,
-      { category: caseObj.category, priorityScore: caseObj.priorityScore },
-    ),
-  ];
+export function orchestrateCase(
+  shipmentCase: ShipmentCase
+): AgentEvent[] {
+  const events: AgentEvent[] = [];
 
-  if (caseObj.category !== "BL_COMPARISON") {
-    events.push(
-      event(
-        caseObj,
-        "inbox",
-        "Classification complete",
-        "completed",
-        "No SI-vs-BL comparison required for this email category.",
+  const addEvent = (
+    event: Omit<
+      AgentEvent,
+      | "id"
+      | "caseId"
+      | "shipmentReference"
+      | "timestamp"
+    >
+  ) => {
+    events.push({
+      id: eventId(
+        shipmentCase.id,
+        events.length + 1
       ),
-    );
+
+      caseId: shipmentCase.id,
+
+      shipmentReference:
+        shipmentCase.shipmentReference,
+
+      timestamp:
+        new Date().toISOString(),
+
+      ...event,
+    });
+  };
+
+  // --------------------------------------------------
+  // Orchestrator receives processed case
+  // --------------------------------------------------
+
+  addEvent({
+    agent: "orchestrator",
+    action: "inspect_case",
+    status: "completed",
+
+    summary:
+      `Case classified as ${shipmentCase.category}.`,
+
+    evidence: {
+      category:
+        shipmentCase.category,
+
+      verificationStatus:
+        shipmentCase.verificationStatus,
+
+      reviewReason:
+        shipmentCase.reviewReason ?? null,
+    },
+  });
+
+  // --------------------------------------------------
+  // Non-document-comparison emails
+  // --------------------------------------------------
+
+  if (
+    shipmentCase.category !==
+    "BL_COMPARISON"
+  ) {
+    addEvent({
+      agent: "orchestrator",
+      action: "route_email",
+      status: "completed",
+
+      summary:
+        `No SI-vs-BL verification required for ${shipmentCase.category}.`,
+
+      evidence: {
+        category:
+          shipmentCase.category,
+      },
+    });
+
     return events;
   }
 
-  if (caseObj.verificationStatus === "NEEDS_REVIEW") {
-    events.push(
-      event(
-        caseObj,
-        "critic",
-        "Escalate uncertain case",
-        "needs_review",
-        "Case cannot be decided reliably and requires human review.",
-        { reviewReason: caseObj.reviewReason },
-      ),
-    );
-    return events;
-  }
+  // --------------------------------------------------
+  // Existing extraction evidence
+  // --------------------------------------------------
 
-  events.push(
-    event(
-      caseObj,
-      "verification",
-      "Verify seven fields",
-      "completed",
-      caseObj.hasDefect
-        ? `Detected ${caseObj.defectFields.length} mismatched field(s).`
-        : "No mismatch detected across the compared fields.",
-      { defectFields: caseObj.defectFields },
-    ),
-  );
+  addEvent({
+    agent: "extraction",
+    action:
+      "review_extracted_documents",
 
-  if (caseObj.hasRevision && caseObj.revisionComparison) {
-    events.push(
-      event(
-        caseObj,
-        "revision",
-        "Run 3-way revision check",
-        caseObj.revisionComparison.overallOutcome === "RESOLVED"
+    status: "completed",
+
+    summary:
+      "Reviewed the SI and BL extraction already produced by the document pipeline.",
+
+    evidence: {
+      hasSi:
+        Boolean(
+          shipmentCase.siData
+        ),
+
+      hasBl:
+        Boolean(
+          shipmentCase.blData
+        ),
+    },
+
+    handoffTo:
+      shipmentCase.hasRevision &&
+      shipmentCase.revisionComparison
+        ? "revision"
+        : "verification",
+
+    handoffReason:
+      shipmentCase.hasRevision &&
+      shipmentCase.revisionComparison
+        ? "A revised BL was detected and requires three-way SI vs BL V1 vs BL V2 analysis."
+        : "SI and BL extraction is available for seven-field verification.",
+  });
+
+  // --------------------------------------------------
+  // Revision Intelligence Agent
+  // --------------------------------------------------
+
+  if (
+    shipmentCase.hasRevision &&
+    shipmentCase.revisionComparison
+  ) {
+    const revision =
+      shipmentCase.revisionComparison;
+
+    const correctedCount =
+      revision.correctedFields.filter(
+        (field) =>
+          field.status === "CORRECTED"
+      ).length;
+
+    const stillMismatchCount =
+      revision.correctedFields.filter(
+        (field) =>
+          field.status === "STILL_MISMATCH"
+      ).length;
+
+    const unexpectedChangeCount =
+      revision.unexpectedChanges.length;
+
+    addEvent({
+      agent: "revision",
+      action: "review_bl_revision",
+
+      status:
+        revision.overallOutcome === "RESOLVED"
           ? "completed"
-          : "needs_review",
-        `Revision check found ${caseObj.revisionComparison.correctedFields.length} correction candidate(s) and ${caseObj.revisionComparison.unexpectedChanges.length} unexpected change(s).`,
-        {
-          overallOutcome: caseObj.revisionComparison.overallOutcome,
-          correctedFields: caseObj.revisionComparison.correctedFields,
-          unexpectedChanges: caseObj.revisionComparison.unexpectedChanges,
-        },
-      ),
-    );
+          : "requires_review",
+
+      summary:
+        revision.overallOutcome === "RESOLVED"
+          ? `BL V2 resolved the previous discrepancies. ${correctedCount} field(s) were corrected.`
+          : `BL V2 requires further review. ${stillMismatchCount} field(s) remain mismatched and ${unexpectedChangeCount} unexpected change(s) were detected.`,
+
+      evidence: {
+        blVersion:
+          shipmentCase.blVersion,
+
+        outcome:
+          revision.overallOutcome,
+
+        correctedFields:
+          revision.correctedFields,
+
+        unexpectedChanges:
+          revision.unexpectedChanges,
+      },
+
+      handoffTo:
+        revision.overallOutcome === "RESOLVED"
+          ? "verification"
+          : "critic",
+
+      handoffReason:
+        revision.overallOutcome === "RESOLVED"
+          ? "BL V2 resolved the revision discrepancies; continue final verification."
+          : "BL V2 contains unresolved or unexpected changes requiring review.",
+    });
   }
 
-  if (caseObj.hasDefect) {
-    events.push(
-      event(
-        caseObj,
-        "resolution",
-        "Prepare amendment workflow",
-        "completed",
-        "Discrepancy is ready for human-approved carrier correction drafting.",
-        { defectFields: caseObj.defectFields },
-      ),
-    );
+  // --------------------------------------------------
+  // Verification agent
+  // --------------------------------------------------
+
+  addEvent({
+    agent: "verification",
+    action:
+      "review_verification_result",
+
+    status: "completed",
+
+    summary:
+      `Verification result: ${shipmentCase.verificationStatus}.`,
+
+    evidence: {
+      status:
+        shipmentCase.verificationStatus,
+
+      hasDefect:
+        shipmentCase.hasDefect,
+
+      defectFields:
+        shipmentCase.defectFields ?? [],
+
+      fieldComparisons:
+        shipmentCase.fieldComparisons ?? [],
+    },
+
+    handoffTo:
+      shipmentCase.verificationStatus ===
+      "NEEDS_REVIEW"
+        ? "critic"
+        : shipmentCase.verificationStatus ===
+            "MISMATCH"
+          ? "resolution"
+          : "orchestrator",
+
+    handoffReason:
+      shipmentCase.verificationStatus ===
+      "NEEDS_REVIEW"
+        ? "Verification could not safely reach a final decision."
+        : shipmentCase.verificationStatus ===
+            "MISMATCH"
+          ? "Confirmed discrepancies require resolution."
+          : "All required fields passed verification.",
+  });
+
+  // --------------------------------------------------
+  // Needs human review
+  // --------------------------------------------------
+
+  if (
+    shipmentCase.verificationStatus ===
+    "NEEDS_REVIEW"
+  ) {
+    addEvent({
+      agent: "critic",
+
+      action:
+        "enforce_zero_guess_gate",
+
+      status:
+        "requires_review",
+
+      summary:
+        "Automatic clearance blocked. Human review is required.",
+
+      evidence: {
+        reviewReason:
+          shipmentCase.reviewReason ??
+          "unknown",
+
+        defectFields:
+          shipmentCase.defectFields ??
+          [],
+      },
+
+      handoffReason:
+        "Human verification is required before the case can proceed.",
+    });
+
+    return events;
   }
+
+  // --------------------------------------------------
+  // Confirmed mismatch
+  // --------------------------------------------------
+
+  if (
+    shipmentCase.verificationStatus ===
+    "MISMATCH"
+  ) {
+    addEvent({
+      agent: "resolution",
+
+      action:
+        "prepare_resolution",
+
+      status: "completed",
+
+      summary:
+        "Confirmed SI-vs-BL discrepancies are ready for amendment workflow.",
+
+      evidence: {
+        defectFields:
+          shipmentCase.defectFields ??
+          [],
+
+        mismatchCount:
+          shipmentCase
+            .fieldComparisons
+            ?.filter(
+              (field: any) =>
+                field.status ===
+                "MISMATCH"
+            ).length ?? 0,
+      },
+    });
+
+    return events;
+  }
+
+  // --------------------------------------------------
+  // Clean case
+  // --------------------------------------------------
+
+  addEvent({
+    agent: "orchestrator",
+
+    action:
+      "close_verification",
+
+    status: "completed",
+
+    summary:
+      "No discrepancy or reliability issue requires further intervention.",
+
+    evidence: {
+      status:
+        shipmentCase.verificationStatus,
+    },
+  });
 
   return events;
 }

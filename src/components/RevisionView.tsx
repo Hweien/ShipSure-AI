@@ -3,18 +3,14 @@ import {
   GitCompare, 
   CheckCircle2, 
   AlertTriangle, 
-  ArrowRight, 
-  UserCheck, 
-  FileText,
-  ShieldAlert,
-  Clock
+  ShieldAlert
 } from "lucide-react";
 import { ShipmentCase } from "../types";
 
 interface RevisionViewProps {
   cases: ShipmentCase[];
   onOpenCase: (caseId: string) => void;
-  onNavigateToHumanReview: () => void;
+  onNavigateToHumanReview: (caseId: string) => void; 
 }
 
 export const RevisionView: React.FC<RevisionViewProps> = ({
@@ -23,6 +19,10 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
   onNavigateToHumanReview
 }) => {
   const revisionCases = cases.filter((c) => c.hasRevision);
+
+  const handleSendToReview = (c: ShipmentCase) => {
+    onNavigateToHumanReview(c.id);
+  };
 
   return (
     <div id="revision-view" className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -68,13 +68,14 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => onOpenCase(c.id)}
-                    className="text-xs bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 font-semibold px-3 py-1.5 rounded-lg transition"
+                    className="text-xs bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 font-semibold px-3 py-1.5 rounded-lg transition cursor-pointer"
                   >
                     View SI vs BL
                   </button>
+                  {/* ✅ Calls handleSendToReview to guarantee it appears in Human Review */}
                   <button
-                    onClick={onNavigateToHumanReview}
-                    className="text-xs bg-purple-600 hover:bg-purple-700 text-white font-semibold px-3.5 py-1.5 rounded-lg transition cursor-pointer"
+                    onClick={() => handleSendToReview(c)}
+                    className="text-xs bg-purple-600 hover:bg-purple-700 text-white font-semibold px-3.5 py-1.5 rounded-lg transition cursor-pointer shadow-2xs"
                   >
                     Send to Review Desk
                   </button>
@@ -82,18 +83,34 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
               </div>
 
               {/* Status Outcome Banner */}
-              <div className="p-4 bg-amber-50/70 border-b border-amber-200 text-xs text-amber-900 flex items-center justify-between">
+              <div
+                className={`p-4 border-b text-xs flex items-center justify-between ${
+                  rev.overallOutcome === "RESOLVED"
+                    ? "bg-emerald-50/70 border-emerald-200 text-emerald-900"
+                    : "bg-amber-50/70 border-amber-200 text-amber-900"
+                }`}
+              >
                 <div className="flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                  {rev.overallOutcome === "RESOLVED" ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  ) : (
+                    <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                  )}
+
                   <div>
-                    <strong>Outcome:</strong> {rev.correctedFields.length} requested corrections completed •{" "}
-                    <span className="text-red-700 font-bold">
-                      {rev.unexpectedChanges.length} unexpected modification detected
-                    </span>
+                    <strong>Outcome:</strong>{" "}
+                    {rev.correctedFields.filter(
+                      (field) => field.status === "CORRECTED"
+                    ).length}{" "}
+                    corrections completed •{" "}
+                    {rev.unexpectedChanges.length} unexpected changes
                   </div>
                 </div>
-                <span className="text-[11px] font-semibold bg-amber-200/70 px-2 py-0.5 rounded text-amber-900">
-                  Human Review Required
+
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded">
+                  {rev.overallOutcome === "RESOLVED"
+                    ? "Resolved"
+                    : "Human Review Required"}
                 </span>
               </div>
 
@@ -115,7 +132,6 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {/* Corrected fields */}
                       {rev.correctedFields.map((cf, i) => (
                         <tr key={i} className="hover:bg-emerald-50/20">
                           <td className="py-3 px-4 font-semibold text-slate-900 capitalize">
@@ -125,15 +141,21 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                           <td className="py-3 px-4 font-mono text-slate-500 line-through">{String(cf.v1Value)}</td>
                           <td className="py-3 px-4 font-mono font-bold text-emerald-700">{String(cf.v2Value)}</td>
                           <td className="py-3 px-4">
-                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              CORRECTED
-                            </span>
+                            {cf.status === "CORRECTED" ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                CORRECTED
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded">
+                                <AlertTriangle className="w-3 h-3 text-red-600" />
+                                STILL MISMATCH
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))}
 
-                      {/* Unexpected changes */}
                       {rev.unexpectedChanges.map((uc, i) => (
                         <tr key={i} className="bg-red-50/40">
                           <td className="py-3 px-4 font-bold text-red-900 capitalize">
@@ -156,14 +178,25 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                   </table>
                 </div>
 
-                {/* Explanation Callout */}
                 <div className="mt-4 p-3.5 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-1.5 text-slate-700">
                   <div className="font-bold text-slate-900 flex items-center gap-1.5">
                     <ShieldAlert className="w-4 h-4 text-amber-600" />
                     Revision Agent Forensic Summary:
                   </div>
                   <p className="leading-relaxed text-slate-600">
-                    The carrier successfully corrected the Container Count from 4 to 3 and the Gross Weight from 19,500 KG to 18,200 KG. However, during re-drafting, the Consignee was altered from <strong>"PACIFIC INDUSTRIAL TRADING LTD"</strong> to <strong>"PACIFIC INDUSTRIAL LOGISTICS GROUP LTD"</strong>. Since this was not requested, the release must remain on hold until authorized.
+                    {rev.overallOutcome === "RESOLVED"
+                      ? `BL V2 resolved all identified discrepancies. ${
+                          rev.correctedFields.filter(
+                            (field) => field.status === "CORRECTED"
+                          ).length
+                        } field(s) were successfully corrected.`
+                      : `BL V2 requires human review. ${
+                          rev.correctedFields.filter(
+                            (field) => field.status === "STILL_MISMATCH"
+                          ).length
+                        } field(s) remain mismatched and ${
+                          rev.unexpectedChanges.length
+                        } unexpected change(s) were detected.`}
                   </p>
                 </div>
               </div>

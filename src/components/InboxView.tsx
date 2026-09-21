@@ -193,7 +193,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
                     )}
                   </td>
                   <td className="py-3.5 px-4 text-slate-500">
-                    {new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {e.date? new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }): "No date"}
                   </td>
                   <td className="py-3.5 px-4 text-right">
                     {category === "BL_COMPARISON" && relatedCase && (
@@ -275,7 +275,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
               </button>
 
               <div className="flex items-center gap-2">
-                {cases.find((c) => c.emailId === selectedEmail.email_id && c.category === "BL_COMPARISON") && (
+                {cases.find((c) => c.emailId === selectedEmail.email_id && c.category === "BL_COMPARISON") ? (
                   <button
                     onClick={() => {
                       const c = cases.find((item) => item.emailId === selectedEmail.email_id);
@@ -288,10 +288,15 @@ export const InboxView: React.FC<InboxViewProps> = ({
                   >
                     Open SI vs BL Verification
                   </button>
+                ) : (
+                  <span className="text-[11px] text-slate-500 italic bg-slate-100 px-2.5 py-1.5 rounded-md border border-slate-200">
+                    ℹ️ Triage Complete: Non-comparison email
+                  </span>
                 )}
+                
                 <button
                   onClick={() => setSelectedEmail(null)}
-                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium px-4 py-2 rounded-lg transition"
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium px-4 py-2 rounded-lg transition cursor-pointer"
                 >
                   Close
                 </button>

@@ -4,10 +4,32 @@ import fs from "fs/promises";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import ExcelJS from "exceljs";
+import { PDFParse } from "pdf-parse";
+import mammoth from "mammoth";
+import { createHash } from "crypto";
+
 import { compareRevision } from "./server/services/revisionEngine";
 import { orchestrateCase } from "./server/services/orchestrator";
 import { JsonAuditRepository } from "./server/services/auditRepository";
 import { caseRepository } from "./server/services/caseRepository";
+import { processEmailPipeline } from "./server/services/processingPipeline";
+import {
+  verifyDocuments,
+} from "./src/services/verificationEngine";
+
+import {
+  normalizeContainerCount,
+  normalizeEntityName,
+  normalizeGrossWeight,
+  normalizePort,
+} from "./src/services/normalization";
+
+import type {
+  ComparisonField,
+  ExtractedDocumentFields,
+} from "./src/types";
+import { compareDocuments } from "./src/services/comparison/comparisonService";
 
 dotenv.config();
 
@@ -16,11 +38,114 @@ const PORT = Number(process.env.PORT || 3000);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 15000);
 
-app.use(express.json({ limit: "15mb" }));
+// 50 MB is needed for base64 image/PDF payloads used by Vision OCR.
+app.use(express.json({ limit: "50mb" }));
 
 const auditRepository = new JsonAuditRepository();
 
 type DataSourceMode = "DEMO" | "LOCAL" | "DOCKER";
+
+type PipelineRunState = {
+  running: boolean;
+  total: number;
+  processed: number;
+  failed: number;
+  skipped: number;
+  currentEmailId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  failures: {
+    emailId: string;
+    error: string;
+  }[];
+};
+
+const pipelineRunState: PipelineRunState = {
+  running: false,
+  total: 0,
+  processed: 0,
+  failed: 0,
+  skipped: 0,
+  currentEmailId: null,
+  startedAt: null,
+  finishedAt: null,
+  failures: [],
+};
+
+const PROCESSING_VERSION =
+  "pipeline-v1";
+
+const RUNTIME_DIR =
+  path.resolve(
+    process.cwd(),
+    "runtime"
+  );
+
+const PROCESSED_CACHE_FILE =
+  path.join(
+    RUNTIME_DIR,
+    "processed-email-cases.json"
+  );
+
+const BASELINE_CACHE_FILE =
+  path.resolve(
+    process.cwd(),
+    "data",
+    "baseline-processed-email-cases.json"
+  );
+
+const EXISTING_CASES_FILE =
+  path.join(
+    RUNTIME_DIR,
+    "existing-cases.json"
+  );
+
+type ProcessedEmailEntry = {
+  processedAt: string;
+  fingerprint: string;
+  processingVersion: string;
+  case: any;
+};
+
+type ProcessedEmailCache =
+  Record<
+    string,
+    ProcessedEmailEntry
+  >;
+
+let processedEmailCache:
+  ProcessedEmailCache = {};
+
+function createEmailFingerprint(
+  email: any
+): string {
+  const source =
+    JSON.stringify({
+      emailId:
+        email.email_id,
+      from:
+        email.from ||
+        email.sender ||
+        "",
+      to:
+        email.to ||
+        email.recipient ||
+        "",
+      subject:
+        email.subject ||
+        "",
+      body:
+        email.body ||
+        "",
+      attachments:
+        email.attachments ||
+        [],
+    });
+
+  return createHash("sha256")
+    .update(source)
+    .digest("hex");
+}
 
 let serverConfig: {
   dataSource: DataSourceMode;
@@ -42,7 +167,7 @@ function getGeminiClient(): GoogleGenAI | null {
 
 function validateHttpUrl(raw: string): string {
   const parsed = new URL(raw);
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
+  if (!["http:", "https:"].includes(parsed.protocol)) {
     throw new Error("Only http/https dataset URLs are allowed.");
   }
   if (parsed.username || parsed.password) {
@@ -51,22 +176,86 @@ function validateHttpUrl(raw: string): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+async function fetchWithTimeout(
+  url: string,
+  init?: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller =
+    new AbortController();
+
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
+
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal
+    });
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchJson(url: string, init?: RequestInit): Promise<any> {
-  const response = await fetchWithTimeout(url, init);
+async function fetchJson(
+  url: string,
+  init?: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<any> {
+  const response =
+    await fetchWithTimeout(
+      url,
+      init,
+      timeoutMs
+    );
+
+  const text =
+    await response.text();
+
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    let details = text;
+
+    try {
+      const parsed =
+        JSON.parse(text);
+
+      details =
+        parsed.error ||
+        parsed.message ||
+        text;
+    } catch {
+      // Keep raw response.
+    }
+
+    throw new Error(
+      `${response.status} ${response.statusText}: ${details}`
+    );
   }
-  return response.json();
+
+  if (!text) {
+    return null;
+  }
+
+  return JSON.parse(text);
+}
+
+async function internalPostJson<T>(
+  route: string,
+  body: unknown
+): Promise<T> {
+  return fetchJson(
+    `http://127.0.0.1:${PORT}${route}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+    90000
+  ) as Promise<T>;
 }
 
 function dockerBase(): string {
@@ -85,6 +274,255 @@ function safeLocalAttachment(attPath: string): string {
     throw new Error("Invalid attachment path.");
   }
   return target;
+}
+
+async function readAttachmentBuffer(attPath: string): Promise<Buffer> {
+  if (!attPath.startsWith("attachments/")) {
+    throw new Error("Attachment path must start with attachments/.");
+  }
+
+  if (serverConfig.dataSource === "DOCKER") {
+    const upstream = await fetchWithTimeout(`${dockerBase()}/${attPath}`);
+    if (!upstream.ok) {
+      throw new Error(`${upstream.status} ${upstream.statusText}`);
+    }
+    return Buffer.from(await upstream.arrayBuffer());
+  }
+
+  if (serverConfig.dataSource === "LOCAL") {
+    return fs.readFile(safeLocalAttachment(attPath));
+  }
+
+  throw new Error("Attachment loading from the backend is unavailable in DEMO mode.");
+}
+
+function extensionFromAttachment(attPath: string): string {
+  return path.extname(attPath).toLowerCase();
+}
+
+async function saveProcessedEmailCache() {
+  await fs.mkdir(
+    RUNTIME_DIR,
+    {
+      recursive: true,
+    }
+  );
+
+  const tempFile =
+    `${PROCESSED_CACHE_FILE}.tmp`;
+
+  await fs.writeFile(
+    tempFile,
+    JSON.stringify(
+      processedEmailCache,
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  await fs.rename(
+    tempFile,
+    PROCESSED_CACHE_FILE
+  );
+}
+
+async function loadProcessedState() {
+  await fs.mkdir(
+    RUNTIME_DIR,
+    {
+      recursive: true,
+    }
+  );
+
+  let baselineCache: ProcessedEmailCache = {};
+  let runtimeCache: ProcessedEmailCache = {};
+
+  // ==================================================
+  // 1. Load shared team baseline FIRST
+  // ==================================================
+  try {
+    const content =
+      await fs.readFile(
+        BASELINE_CACHE_FILE,
+        "utf8"
+      );
+
+    baselineCache =
+      JSON.parse(content);
+
+    console.log(
+      `[Pipeline Cache] Loaded team baseline: ${
+        Object.keys(
+          baselineCache
+        ).length
+      } emails`
+    );
+  } catch (error: any) {
+    if (
+      error?.code !==
+      "ENOENT"
+    ) {
+      console.error(
+        "[Pipeline Cache] Failed to load baseline:",
+        error
+      );
+    } else {
+      console.log(
+        "[Pipeline Cache] No team baseline found"
+      );
+    }
+  }
+
+  // ==================================================
+  // 2. Load this laptop's runtime cache
+  //    Runtime can contain newer emails
+  // ==================================================
+  try {
+    const content =
+      await fs.readFile(
+        PROCESSED_CACHE_FILE,
+        "utf8"
+      );
+
+    runtimeCache =
+      JSON.parse(content);
+
+    console.log(
+      `[Pipeline Cache] Loaded runtime cache: ${
+        Object.keys(
+          runtimeCache
+        ).length
+      } emails`
+    );
+  } catch (error: any) {
+    if (
+      error?.code !==
+      "ENOENT"
+    ) {
+      console.error(
+        "[Pipeline Cache] Failed to load runtime cache:",
+        error
+      );
+    }
+  }
+
+  // ==================================================
+  // 3. Merge them
+  //
+  // Baseline provides the shared 520.
+  // Runtime overrides/adds newer local results.
+  // ==================================================
+  processedEmailCache = {
+    ...baselineCache,
+    ...runtimeCache,
+  };
+
+  console.log(
+    `[Pipeline Cache] Total available: ${
+      Object.keys(
+        processedEmailCache
+      ).length
+    } emails`
+  );
+
+  // ==================================================
+  // 4. Restore all cached cases into memory
+  // ==================================================
+  for (
+    const entry of
+    Object.values(
+      processedEmailCache
+    )
+  ) {
+    if (entry?.case) {
+      caseRepository.save(
+        entry.case
+      );
+    }
+  }
+
+  // ==================================================
+  // 5. Create/update this laptop's runtime cache
+  //    using the merged result
+  // ==================================================
+  if (
+    Object.keys(
+      processedEmailCache
+    ).length > 0
+  ) {
+    await saveProcessedEmailCache();
+  }
+}
+
+function normalizeHumanOverride(
+  field: ComparisonField,
+  value: string
+): string | number {
+  switch (field) {
+    case "container_count":
+      return normalizeContainerCount(
+        value
+      ).normalized;
+
+    case "gross_weight_kg":
+      return normalizeGrossWeight(
+        value
+      ).normalized;
+
+    case "port_of_loading":
+    case "port_of_discharge":
+      return normalizePort(
+        value
+      ).normalized;
+
+    case "shipper":
+    case "consignee":
+    case "notify_party":
+      return normalizeEntityName(
+        value
+      ).normalized;
+  }
+}
+
+function applyHumanOverride(
+  document:
+    ExtractedDocumentFields,
+  field: ComparisonField,
+  value: string
+): ExtractedDocumentFields {
+  const updated =
+    JSON.parse(
+      JSON.stringify(document)
+    ) as ExtractedDocumentFields;
+
+  updated.fields[field] = {
+    ...updated.fields[field],
+
+    raw: value,
+
+    normalized:
+      normalizeHumanOverride(
+        field,
+        value
+      ),
+
+    confidence: 1,
+
+    snippet:
+      `Human-reviewed value: ${value}`,
+  };
+
+  updated.unreadableFields =
+    (
+      updated.unreadableFields ??
+      []
+    ).filter(
+      (item) =>
+        item !== field
+    );
+
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,13 +569,555 @@ app.post("/api/config", async (req, res) => {
       return res.status(400).json({ error: "Invalid dataSource." });
     }
     if (dataSource) serverConfig.dataSource = dataSource;
-    if (typeof dataPath === "string" && dataPath.trim()) serverConfig.dataPath = dataPath.trim();
+    if (typeof dataPath === "string" && dataPath.trim()) {
+      serverConfig.dataPath = dataPath.trim();
+    }
     if (typeof dataApiUrl === "string" && dataApiUrl.trim()) {
       serverConfig.dataApiUrl = validateHttpUrl(dataApiUrl.trim());
     }
     return res.json({ success: true, config: serverConfig });
   } catch (error: any) {
     return res.status(400).json({ error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DS1 - Email classification
+// ---------------------------------------------------------------------------
+app.post("/api/ds1/classify-email", async (req, res) => {
+  try {
+    const email = req.body;
+
+    if (!email || !email.email_id || !email.subject || !email.body) {
+      return res.status(400).json({ error: "Invalid email input" });
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.status(503).json({ error: "Gemini API key is not configured" });
+    }
+
+    const prompt = `
+You are the Inbox Intelligence Agent for ShipSure AI.
+
+Classify ONE shipping operations email into exactly one category:
+BL_COMPARISON, SI_REQUEST, INVOICE_QUERY, GENERAL, or SPAM.
+
+Definitions:
+- BL_COMPARISON: asks to check, compare, verify, validate, review, or confirm a draft Bill of Lading against a Shipping Instruction.
+- SI_REQUEST: concerns submitting, requesting, creating, updating, or processing a Shipping Instruction, but not comparing SI against a draft BL.
+- INVOICE_QUERY: primarily concerns invoices, billing, payment, charges, fees, or financial documentation.
+- GENERAL: legitimate shipping/operational email that does not fit the categories above.
+- SPAM: irrelevant, unsolicited, promotional, or non-operational content.
+
+Rules:
+- Consider subject, body, and attachment names together.
+- Do not classify from keywords alone.
+- A misleading subject must not override actual intent.
+- Return exactly one category.
+- Do not invent information.
+
+Email ID: ${email.email_id}
+From: ${email.from || email.sender || ""}
+Subject: ${email.subject}
+Body:
+${email.body}
+
+Attachments:
+${JSON.stringify(email.attachments || [])}
+
+Return ONLY valid JSON:
+{
+  "category": "BL_COMPARISON",
+  "confidence": 0.95,
+  "evidence": "Short explanation based on the email."
+}`;
+
+    let response: any;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: prompt,
+          config: { responseMimeType: "application/json" },
+        });
+        break;
+      } catch (error: any) {
+        if (error?.status === 503 && attempt < 3) {
+          const delay = 5000 * attempt;
+          console.log(
+            `Gemini busy during email classification. Retry ${attempt}/3 in ${delay / 1000}s...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!response) throw new Error("Gemini did not return a response");
+
+    const parsed = JSON.parse(response.text || "{}");
+    const validCategories = [
+      "BL_COMPARISON",
+      "SI_REQUEST",
+      "INVOICE_QUERY",
+      "GENERAL",
+      "SPAM",
+    ];
+
+    if (!validCategories.includes(parsed.category)) {
+      throw new Error(`Invalid category returned: ${parsed.category}`);
+    }
+
+    return res.json({
+      email_id: email.email_id,
+      category: parsed.category,
+      confidence: parsed.confidence,
+      evidence: parsed.evidence,
+    });
+  } catch (error: any) {
+    console.error(
+      "Email classification error:",
+      error
+    );
+
+    if (error?.status === 429) {
+      return res.status(429).json({
+        success: false,
+        error:
+          "Gemini email classification quota exceeded",
+      });
+    }
+
+    if (error?.status === 503) {
+      return res.status(503).json({
+        success: false,
+        error:
+          "Gemini email classification temporarily unavailable",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error:
+        "Email classification failed",
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DS1 - Read attachment content (TXT/XLSX/PDF/DOCX)
+// ---------------------------------------------------------------------------
+app.post("/api/ds1/read-document", async (req, res) => {
+  try {
+    const { path: attachmentPath } = req.body || {};
+    if (!attachmentPath) {
+      return res.status(400).json({ error: "Document path is required" });
+    }
+
+    const extension = extensionFromAttachment(attachmentPath);
+    const data = await readAttachmentBuffer(attachmentPath);
+
+    let content = "";
+    let fileType = extension.replace(/^\./, "");
+
+    if (extension === ".txt") {
+      content = data.toString("utf8");
+      fileType = "txt";
+    } else if (extension === ".xlsx") {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(data as any);
+      const lines: string[] = [];
+
+      workbook.eachSheet((worksheet: any) => {
+        worksheet.eachRow((row: any) => {
+          const rowValues = Array.isArray(row.values)
+            ? row.values.slice(1)
+            : Object.values(row.values as object);
+          const values = rowValues
+            .map((value: any) => String(value ?? "").trim())
+            .filter((value: string) => value.length > 0);
+          if (values.length > 0) lines.push(values.join(" | "));
+        });
+      });
+
+      content = lines.join("\n");
+      fileType = "xlsx";
+    } else if (extension === ".pdf") {
+      fileType = "pdf";
+
+      const parser = new PDFParse({
+        data
+      });
+
+      try {
+        const result =
+          await parser.getText();
+
+        content =
+          result.text?.trim() || "";
+
+        // A valid PDF with no extractable text
+        // may be a scanned/image PDF.
+        if (!content) {
+          console.warn(
+            `[Document Reader] PDF contains no extractable text: ${attachmentPath}`
+          );
+        }
+      } catch (error: any) {
+        console.warn(
+          `[Document Reader] Unreadable PDF: ${attachmentPath} - ${error.message}`
+        );
+
+        // IMPORTANT:
+        // Do not return HTTP 500.
+        // Let the pipeline route this to Human Review.
+        content = "";
+
+        try {
+          await parser.destroy();
+        } catch {
+          // Ignore cleanup failure.
+        }
+
+        return res.json({
+          path: attachmentPath,
+          fileType: "pdf",
+          content: "",
+          unreadable: true,
+          readError:
+            "invalid_pdf_structure"
+        });
+      }
+
+      await parser.destroy();
+    } else if (extension === ".docx") {
+      const result = await mammoth.extractRawText({ buffer: data });
+      content = result.value;
+      fileType = "docx";
+    } else if ([".png", ".jpg", ".jpeg", ".webp"].includes(extension)) {
+      // Image files are intentionally sent to the Vision OCR endpoint.
+      content = "";
+    } else {
+      return res.status(400).json({ error: `Unsupported file type: ${extension}` });
+    }
+
+    return res.json({ path: attachmentPath, fileType, content });
+  } catch (error: any) {
+    console.error("Document reading error:", error);
+    return res.status(500).json({ error: `Document reading failed: ${error.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DS1 - Identify SI and BL attachments
+// ---------------------------------------------------------------------------
+function identifyDocumentsFallback(
+  attachments: string[],
+  attachmentContents: any[]
+) {
+  return attachments.map((attachmentPath) => {
+    const filename = attachmentPath
+      .split(/[\\/]/)
+      .pop()
+      ?.toLowerCase() || "";
+
+    const contentRecord = attachmentContents.find(
+      (doc: any) => doc.path === attachmentPath
+    );
+
+    const content = String(
+      contentRecord?.content || ""
+    ).toLowerCase();
+
+    let documentType:
+      | "SI"
+      | "BL"
+      | "OTHER"
+      | "UNKNOWN" = "UNKNOWN";
+
+    let evidence =
+      "No strong deterministic document marker found.";
+
+    // Strong SI indicators
+    if (
+      content.includes("shipping instruction") ||
+      filename.includes("_si.") ||
+      filename.includes("-si.") ||
+      filename.startsWith("si_")
+    ) {
+      documentType = "SI";
+      evidence =
+        "Identified by explicit Shipping Instruction marker in filename/content.";
+    }
+
+    // Strong BL indicators
+    else if (
+      content.includes("bill of lading") ||
+      filename.includes("_bl.") ||
+      filename.includes("-bl.") ||
+      filename.includes("draft_bl") ||
+      filename.includes("draft-bl")
+    ) {
+      documentType = "BL";
+      evidence =
+        "Identified by explicit Bill of Lading marker in filename/content.";
+    }
+
+    return {
+      path: attachmentPath,
+      documentType,
+
+      // Conservative fallback score.
+      // This is not treated as calibrated probability.
+      confidence:
+        documentType === "UNKNOWN"
+          ? 0
+          : 0.6,
+
+      evidence:
+        `[Deterministic fallback] ${evidence}`
+    };
+  });
+}
+
+app.post("/api/ds1/identify-documents", async (req, res) => {
+  const {
+    email,
+    attachmentContents = []
+  } = req.body || {};
+
+  const attachments =
+    email?.attachments || [];
+
+  try {
+    if (!email || !email.email_id) {
+      return res.status(400).json({ error: "Invalid email input" });
+    }
+
+    const attachments = email.attachments || [];
+    if (attachments.length === 0) return res.json([]);
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.status(503).json({ error: "Gemini API key is not configured" });
+    }
+
+    const prompt = `
+You are the Document Identification Agent for ShipSure AI.
+
+Identify each attachment as SI, BL, OTHER, or UNKNOWN.
+Use the email subject, body, filename, and extracted attachment content.
+Prioritize actual document content when it clearly identifies the document type.
+Do not classify from one keyword alone. If evidence is insufficient or conflicting, return UNKNOWN.
+
+Email ID: ${email.email_id}
+Subject: ${email.subject || ""}
+Body:
+${email.body || ""}
+
+Attachments:
+${JSON.stringify(attachments)}
+
+Extracted attachment contents:
+${attachmentContents
+  .map(
+    (doc: any) => `\n--- ${doc.path} ---\n${(doc.content || "").slice(0, 12000)}\n`,
+  )
+  .join("\n")}
+
+Return ONLY valid JSON as an array:
+[
+  {
+    "path": "attachment filename exactly as provided",
+    "documentType": "SI",
+    "confidence": 0.95,
+    "evidence": "Short explanation"
+  }
+]`;
+
+    let response: any;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: prompt,
+          config: { responseMimeType: "application/json" },
+        });
+        break;
+      } catch (error: any) {
+        if (error?.status === 503 && attempt < 3) {
+          const delay = 5000 * attempt;
+          console.log(
+            `Gemini busy during document identification. Retry ${attempt}/3 in ${delay / 1000}s...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!response) throw new Error("Gemini did not return a response");
+
+    const parsed = JSON.parse(response.text || "[]");
+    if (!Array.isArray(parsed)) throw new Error("Gemini did not return an array");
+
+    const validTypes = ["SI", "BL", "OTHER", "UNKNOWN"];
+    for (const document of parsed) {
+      if (!validTypes.includes(document.documentType)) {
+        throw new Error(`Invalid document type returned: ${document.documentType}`);
+      }
+    }
+
+    return res.json(parsed);
+  } catch (error: any) {
+      console.error(
+        "Document identification error:",
+        error
+      );
+
+      // Gemini temporarily unavailable:
+      // fall back to deterministic evidence.
+      if (
+        error?.status === 503 ||
+        error?.status === 429
+      ) {
+        console.warn(
+          "Gemini identification unavailable. " +
+          "Using deterministic fallback."
+        );
+
+        const fallback =
+          identifyDocumentsFallback(
+            attachments,
+            attachmentContents
+          );
+
+        return res.json(fallback);
+      }
+
+      return res.status(500).json({
+        success: false,
+        error:
+          "Document identification failed"
+      });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// DS1 - Extract the seven fields from document text
+// ---------------------------------------------------------------------------
+app.post("/api/ds1/extract-fields", async (req, res) => {
+  try {
+    const { text, documentType } = req.body || {};
+    if (!text || !["SI", "BL"].includes(documentType)) {
+      return res.status(400).json({ error: "Valid text and documentType are required" });
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      return res.status(503).json({ error: "Gemini API key is not configured" });
+    }
+
+    const prompt = `
+You are the Document Field Extraction Agent for ShipSure AI.
+
+Extract exactly these 7 fields:
+1. shipper
+2. consignee
+3. notify_party
+4. port_of_loading
+5. port_of_discharge
+6. container_count
+7. gross_weight_kg
+
+Rules:
+- Extract values VERBATIM exactly as they appear.
+- Preserve spaces, punctuation, capitalization, symbols, and units.
+- Do NOT normalize values.
+- Do NOT convert units.
+- Do NOT infer or guess missing values.
+- If a field cannot be found, set raw to null.
+- snippet must contain supporting document text.
+- confidence must be between 0 and 1.
+
+Document type: ${documentType}
+Document:
+${text}
+
+Return ONLY valid JSON:
+{
+  "documentType": "${documentType}",
+  "rawText": ${JSON.stringify(text)},
+  "fields": {
+    "shipper": { "raw": null, "confidence": 0, "snippet": "" },
+    "consignee": { "raw": null, "confidence": 0, "snippet": "" },
+    "notify_party": { "raw": null, "confidence": 0, "snippet": "" },
+    "port_of_loading": { "raw": null, "confidence": 0, "snippet": "" },
+    "port_of_discharge": { "raw": null, "confidence": 0, "snippet": "" },
+    "container_count": { "raw": null, "confidence": 0, "snippet": "" },
+    "gross_weight_kg": { "raw": null, "confidence": 0, "snippet": "" }
+  },
+  "unreadableFields": [],
+  "extractionConfidence": 0
+}`;
+
+    let response: any;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: prompt,
+          config: { responseMimeType: "application/json" },
+        });
+        break;
+      } catch (error: any) {
+        if (error?.status === 503 && attempt < 3) {
+          const delay = 5000 * attempt;
+          console.log(
+            `Gemini busy during field extraction. Retry ${attempt}/3 in ${delay / 1000}s...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!response) throw new Error("Gemini did not return a response");
+
+    const parsed = JSON.parse(response.text || "{}");
+    const requiredFields = [
+      "shipper",
+      "consignee",
+      "notify_party",
+      "port_of_loading",
+      "port_of_discharge",
+      "container_count",
+      "gross_weight_kg",
+    ];
+
+    for (const field of requiredFields) {
+      if (!parsed.fields || !(field in parsed.fields)) {
+        throw new Error(`Missing extracted field: ${field}`);
+      }
+    }
+
+    return res.json(parsed);
+  } catch (error: any) {
+    console.error("Field extraction error:", error);
+    if (error?.status === 429) {
+      return res.status(429).json({
+        success: false,
+        error: "Gemini field extraction quota exceeded",
+      });
+    }
+    return res.status(503).json({
+      success: false,
+      error: "Field extraction is temporarily unavailable",
+    });
   }
 });
 
@@ -156,13 +1136,50 @@ app.get("/api/dataset/emails", async (_req, res) => {
         .filter((name) => /^email_.*\.json$/i.test(name))
         .sort();
       const emails = await Promise.all(
-        names.map(async (name) => JSON.parse(await fs.readFile(path.join(inboxDir, name), "utf8"))),
+        names.map(async (name) =>
+          JSON.parse(await fs.readFile(path.join(inboxDir, name), "utf8")),
+        ),
       );
       return res.json(emails);
     }
     return res.json([]);
   } catch (error: any) {
-    return res.status(502).json({ error: `Dataset read failed: ${error.message}` });
+    return res.status(502).json({ error: `Dataset read failed: ${error.message}` 
+    });
+  }
+});
+// DS2 - Compare SI and BL
+app.post("/api/ds2/compare", async (req, res) => {
+  try {
+    const { siData, blData } = req.body;
+
+    const result = await compareDocuments(
+      siData,
+      blData
+    );
+
+    res.json(result);
+
+  } catch (error) {
+
+    console.error("Comparison error:", error);
+
+    res.status(500).json({
+      error: "Document comparison failed",
+    });
+  }
+});
+
+// Gemini Multi-Agent & Copilot API endpoint
+app.post("/api/copilot/chat", async (req, res) => {
+  const { prompt, context, agentId, mode } = req.body;
+  const ai = getGeminiClient();
+
+  if (!ai) {
+    return res.json({
+      fallback: true,
+      message: "Server-side GEMINI_API_KEY not configured. Using deterministic multi-agent orchestration engine.",
+    });
   }
 });
 
@@ -188,23 +1205,20 @@ app.get("/api/dataset/emails/:emailId", async (req, res) => {
 app.get("/api/dataset/attachment", async (req, res) => {
   try {
     const attPath = String(req.query.path || "");
-    if (!attPath.startsWith("attachments/")) {
-      return res.status(400).json({ error: "Attachment path must start with attachments/." });
-    }
-
-    if (serverConfig.dataSource === "DOCKER") {
-      const upstream = await fetchWithTimeout(`${dockerBase()}/${attPath}`);
-      if (!upstream.ok) throw new Error(`${upstream.status} ${upstream.statusText}`);
-      const body = Buffer.from(await upstream.arrayBuffer());
-      res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/octet-stream");
-      return res.send(body);
-    }
-
-    if (serverConfig.dataSource === "LOCAL") {
-      return res.sendFile(safeLocalAttachment(attPath));
-    }
-
-    return res.status(404).json({ error: "DEMO attachments are served by the frontend demo provider." });
+    const body = await readAttachmentBuffer(attPath);
+    const extension = extensionFromAttachment(attPath);
+    const contentTypes: Record<string, string> = {
+      ".txt": "text/plain; charset=utf-8",
+      ".pdf": "application/pdf",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".webp": "image/webp",
+    };
+    res.setHeader("Content-Type", contentTypes[extension] || "application/octet-stream");
+    return res.send(body);
   } catch (error: any) {
     return res.status(502).json({ error: `Attachment read failed: ${error.message}` });
   }
@@ -228,57 +1242,1117 @@ app.get("/api/dataset/sample-submission", async (_req, res) => {
 // ---------------------------------------------------------------------------
 // Shipment case repository API
 // ---------------------------------------------------------------------------
-
 app.get("/api/cases", (_req, res) => {
   return res.json(caseRepository.getAll());
 });
 
 app.get("/api/cases/:id", (req, res) => {
   const shipmentCase = caseRepository.getById(req.params.id);
-
   if (!shipmentCase) {
-    return res.status(404).json({
-      error: "Case not found",
-    });
+    return res.status(404).json({ error: "Case not found" });
   }
-
   return res.json(shipmentCase);
 });
 
 app.post("/api/cases", (req, res) => {
   const shipmentCase = req.body;
-
   if (!shipmentCase?.id) {
-    return res.status(400).json({
-      error: "ShipmentCase with id is required.",
-    });
+    return res.status(400).json({ error: "ShipmentCase with id is required." });
   }
-
   const saved = caseRepository.save(shipmentCase);
-
   return res.status(201).json(saved);
 });
 
-// ---------------------------------------------------------------------------
-// orchestration and revision workflow
-// ---------------------------------------------------------------------------
-app.post("/api/orchestration/run", async (req, res) => {
-  try {
-    const caseObj = req.body?.case;
-    if (!caseObj?.id || !caseObj?.category) {
-      return res.status(400).json({ error: "A valid ShipmentCase is required." });
+app.post(
+  "/api/cases/:id/review",
+  async (req, res) => {
+    try {
+      const caseId =
+        req.params.id;
+
+      const shipmentCase =
+        caseRepository.getById(
+          caseId
+        );
+
+      if (!shipmentCase) {
+        return res
+          .status(404)
+          .json({
+            error:
+              "Shipment case not found.",
+          });
+      }
+
+      const {
+        reviewer,
+        approvedStatus,
+        comments,
+        manualOverride,
+      } = req.body || {};
+
+      // -----------------------------------------
+      // Validate human decision
+      // -----------------------------------------
+
+      if (
+        typeof reviewer !==
+          "string" ||
+        !reviewer.trim()
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "reviewer is required.",
+          });
+      }
+
+      if (
+        approvedStatus !== "OK" &&
+        approvedStatus !==
+          "MISMATCH"
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "approvedStatus must be OK or MISMATCH.",
+          });
+      }
+
+      const validFields:
+        ComparisonField[] = [
+          "shipper",
+          "consignee",
+          "notify_party",
+          "port_of_loading",
+          "port_of_discharge",
+          "container_count",
+          "gross_weight_kg",
+        ];
+
+      let effectiveSi =
+        shipmentCase.siData;
+
+      let effectiveBl =
+        shipmentCase.blData;
+
+      let reverification:
+        ReturnType<
+          typeof verifyDocuments
+        > | null = null;
+
+      // -----------------------------------------
+      // Optional manual field correction
+      // -----------------------------------------
+
+      if (manualOverride) {
+        const {
+          field,
+          documentType,
+          value,
+        } = manualOverride;
+
+        if (
+          !validFields.includes(
+            field
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "Invalid override field.",
+            });
+        }
+
+        if (
+          documentType !==
+            "SI" &&
+          documentType !==
+            "BL"
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "documentType must be SI or BL.",
+            });
+        }
+
+        if (
+          typeof value !==
+            "string" ||
+          !value.trim()
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "Override value is required.",
+            });
+        }
+
+        if (
+          documentType === "SI"
+        ) {
+          if (!effectiveSi) {
+            return res
+              .status(400)
+              .json({
+                error:
+                  "Cannot override SI because no SI extraction exists.",
+              });
+          }
+
+          effectiveSi =
+            applyHumanOverride(
+              effectiveSi,
+              field,
+              value.trim()
+            );
+        } else {
+          if (!effectiveBl) {
+            return res
+              .status(400)
+              .json({
+                error:
+                  "Cannot override BL because no BL extraction exists.",
+              });
+          }
+
+          effectiveBl =
+            applyHumanOverride(
+              effectiveBl,
+              field,
+              value.trim()
+            );
+        }
+
+        // ---------------------------------------
+        // Rerun deterministic DS2 verification
+        // using EFFECTIVE copies.
+        //
+        // Original AI extraction remains intact.
+        // ---------------------------------------
+
+        if (
+          effectiveSi &&
+          effectiveBl
+        ) {
+          reverification =
+            verifyDocuments(
+              effectiveSi,
+              effectiveBl,
+              {
+                hasSi: true,
+                hasBl: true,
+              }
+            );
+        }
+      }
+
+      const timestamp =
+        new Date().toISOString();
+
+      // -----------------------------------------
+      // Final status
+      //
+      // If deterministic verification can now
+      // reach OK/MISMATCH, use that.
+      //
+      // Otherwise the human-approved status is
+      // authoritative.
+      // -----------------------------------------
+
+      const finalStatus =
+        reverification &&
+        reverification.status !==
+          "NEEDS_REVIEW"
+          ? reverification.status
+          : approvedStatus;
+
+      const finalHasDefect =
+        finalStatus ===
+        "MISMATCH";
+
+      let finalDefectFields =
+        shipmentCase.defectFields ??
+        [];
+
+      if (reverification) {
+        finalDefectFields =
+          reverification.defectFields;
+      }
+
+      if (
+        finalStatus === "OK"
+      ) {
+        finalDefectFields = [];
+      }
+
+      // -----------------------------------------
+      // Update real ShipmentCase
+      // -----------------------------------------
+
+      const updatedCase = {
+        ...shipmentCase,
+
+        verificationStatus:
+          finalStatus,
+
+        hasDefect:
+          finalHasDefect,
+
+        defectFields:
+          finalDefectFields,
+
+        reviewReason: null,
+
+        humanReviewed: true,
+
+        humanReviewDecision: {
+          reviewer:
+            reviewer.trim(),
+
+          timestamp,
+
+          approvedStatus:
+            finalStatus,
+
+          manualOverrides:
+            manualOverride
+              ? {
+                  [manualOverride.field]:
+                    manualOverride.value,
+                }
+              : undefined,
+
+          comments:
+            comments?.trim() ||
+            `Human review resolved as ${finalStatus}.`,
+        },
+
+        fieldComparisons:
+          reverification
+            ?.fieldComparisons ??
+          shipmentCase
+            .fieldComparisons,
+
+        timeline: [
+          ...(
+            shipmentCase.timeline ??
+            []
+          ),
+
+          {
+            id:
+              `T-HUMAN-${Date.now()}`,
+
+            timestamp,
+
+            agent:
+              "Human Reviewer" as const,
+
+            action:
+              "Human Review Decision",
+
+            summary:
+              `${reviewer.trim()} resolved the case as ${finalStatus}.`,
+
+            status:
+              finalStatus ===
+              "OK"
+                ? "success" as const
+                : "warning" as const,
+
+            details: {
+              originalStatus:
+                shipmentCase
+                  .verificationStatus,
+
+              approvedStatus,
+
+              finalStatus,
+
+              manualOverride:
+                manualOverride ??
+                null,
+
+              reverificationStatus:
+                reverification
+                  ?.status ??
+                null,
+
+              comments:
+                comments ??
+                "",
+            },
+          },
+        ],
+
+        decisions: [
+          ...(
+            shipmentCase.decisions ??
+            []
+          ),
+
+          {
+            id:
+              `DEC-HUMAN-${Date.now()}`,
+
+            caseId:
+              shipmentCase.id,
+
+            emailId:
+              shipmentCase.emailId,
+
+            agent:
+              "Human Reviewer",
+
+            decision:
+              `Human review resolved case as ${finalStatus}`,
+
+            siValue:
+              manualOverride
+                ?.documentType ===
+              "SI"
+                ? manualOverride.value
+                : undefined,
+
+            blValue:
+              manualOverride
+                ?.documentType ===
+              "BL"
+                ? manualOverride.value
+                : undefined,
+
+            evidenceSnippet:
+              comments ||
+              "Human operator decision",
+
+            confidence:
+              "HUMAN_CONFIRMED",
+
+            validationStatus:
+              "Overridden" as const,
+
+            humanInterventionRequired:
+              false,
+
+            timestamp,
+          },
+        ],
+      };
+
+      // -----------------------------------------
+      // Save backend repository
+      // -----------------------------------------
+
+      caseRepository.save(
+        updatedCase
+      );
+
+      // -----------------------------------------
+      // IMPORTANT:
+      // Update persistent processed-email cache.
+      //
+      // Otherwise server restart would restore
+      // the OLD NEEDS_REVIEW case.
+      // -----------------------------------------
+
+      const cached =
+        processedEmailCache[
+          shipmentCase.emailId
+        ];
+
+      if (cached) {
+        cached.case =
+          updatedCase;
+
+        cached.processedAt =
+          timestamp;
+
+        await saveProcessedEmailCache();
+      }
+
+      // -----------------------------------------
+      // Add structured agent/audit event
+      // -----------------------------------------
+
+      await auditRepository.append([
+        {
+          id:
+            `${caseId}-${Date.now()}-human-review`,
+
+          caseId,
+
+          shipmentReference:
+            shipmentCase
+              .shipmentReference,
+
+          agent:
+            "critic",
+
+          action:
+            "human_review_resolved",
+
+          status:
+            "completed",
+
+          summary:
+            `Human reviewer ${reviewer.trim()} resolved the case as ${finalStatus}.`,
+
+          evidence: {
+            originalStatus:
+              shipmentCase
+                .verificationStatus,
+
+            finalStatus,
+
+            manualOverride:
+              manualOverride ??
+              null,
+
+            reverificationStatus:
+              reverification
+                ?.status ??
+              null,
+          },
+
+          timestamp,
+        },
+      ]);
+
+      return res.json({
+        success: true,
+
+        case: updatedCase,
+
+        reverification:
+          reverification
+            ? {
+                status:
+                  reverification.status,
+
+                hasDefect:
+                  reverification.hasDefect,
+
+                defectFields:
+                  reverification
+                    .defectFields,
+
+                explanation:
+                  reverification
+                    .explanation,
+              }
+            : null,
+      });
+    } catch (error: any) {
+      console.error(
+        "Human review failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          error:
+            error?.message ||
+            "Human review failed.",
+        });
     }
-    const events = orchestrateCase(caseObj);
-    await auditRepository.append(events);
-    return res.json({ caseId: caseObj.id, events });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
   }
-});
+);
+
+app.post(
+  "/api/pipeline/process/:emailId",
+  async (req, res) => {
+    try {
+      const emailId = req.params.emailId;
+
+      if (!/^email_[A-Za-z0-9_-]+$/i.test(emailId)) {
+        return res.status(400).json({
+          error: "Invalid email id",
+        });
+      }
+
+      let email: any;
+
+      if (serverConfig.dataSource === "DOCKER") {
+        email = await fetchJson(
+          `${dockerBase()}/emails/${encodeURIComponent(emailId)}`
+        );
+      } else if (serverConfig.dataSource === "LOCAL") {
+        const file = path.join(
+          localRoot(),
+          "inbox",
+          `${emailId}.json`
+        );
+
+        email = JSON.parse(
+          await fs.readFile(file, "utf8")
+        );
+      } else {
+        return res.status(409).json({
+          error:
+            "Pipeline processing requires LOCAL or DOCKER mode.",
+        });
+      }
+
+      const force =
+        req.query.force ===
+        "true";
+
+      const fingerprint =
+        createEmailFingerprint(
+          email
+        );
+
+      const cached =
+        processedEmailCache[
+          email.email_id
+        ];
+
+      if (
+        !force &&
+        cached &&
+        cached.fingerprint ===
+          fingerprint &&
+        cached.processingVersion ===
+          PROCESSING_VERSION
+      ) {
+        caseRepository.save(
+          cached.case
+        );
+
+        console.log(
+          `[Pipeline] Reused cached result for ${email.email_id}`
+        );
+
+        return res.json({
+          success: true,
+          cached: true,
+          case: cached.case,
+          events: [],
+        });
+      }
+
+      const shipmentCase =
+        await processEmailPipeline(
+          email,
+          internalPostJson
+        );
+
+      caseRepository.save(shipmentCase);
+
+      processedEmailCache[
+        email.email_id
+      ] = {
+        processedAt:
+          new Date().toISOString(),
+
+        fingerprint,
+
+        processingVersion:
+          PROCESSING_VERSION,
+
+        case: shipmentCase,
+      };
+
+      await saveProcessedEmailCache();
+
+      const events =
+        orchestrateCase(shipmentCase);
+
+      await auditRepository.append(events);
+
+      return res.json({
+        success: true,
+        case: shipmentCase,
+        events,
+      });
+    } catch (error: any) {
+      console.error(
+        "Pipeline processing failed:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        error:
+          error.message ||
+          "Pipeline processing failed",
+      });
+    }
+  }
+);
+
+async function processNewEmails():
+  Promise<void> {
+
+  if (
+    pipelineRunState.running
+  ) {
+    return;
+  }
+
+  pipelineRunState.running =
+    true;
+
+  pipelineRunState.total = 0;
+  pipelineRunState.processed = 0;
+  pipelineRunState.failed = 0;
+  pipelineRunState.skipped = 0;
+
+  pipelineRunState.currentEmailId =
+    null;
+
+  pipelineRunState.startedAt =
+    new Date().toISOString();
+
+  pipelineRunState.finishedAt =
+    null;
+
+  pipelineRunState.failures = [];
+
+  try {
+    let emails: any[] = [];
+
+    if (
+      serverConfig.dataSource ===
+      "DOCKER"
+    ) {
+      emails =
+        await fetchJson(
+          `${dockerBase()}/emails`
+        );
+    } else if (
+      serverConfig.dataSource ===
+      "LOCAL"
+    ) {
+      const inboxDir =
+        path.join(
+          localRoot(),
+          "inbox"
+        );
+
+      const names =
+        (
+          await fs.readdir(
+            inboxDir
+          )
+        )
+          .filter(
+            (name) =>
+              /^email_.*\.json$/i.test(
+                name
+              )
+          )
+          .sort();
+
+      emails =
+        await Promise.all(
+          names.map(
+            async (name) =>
+              JSON.parse(
+                await fs.readFile(
+                  path.join(
+                    inboxDir,
+                    name
+                  ),
+                  "utf8"
+                )
+              )
+          )
+        );
+    } else {
+      throw new Error(
+        "Automatic pipeline requires LOCAL or DOCKER mode."
+      );
+    }
+
+    pipelineRunState.total =
+      emails.length;
+
+    const queue: {
+      email: any;
+      fingerprint: string;
+    }[] = [];
+
+    // ----------------------------------
+    // Decide which emails actually need
+    // Gemini.
+    // ----------------------------------
+    for (
+      const email of emails
+    ) {
+      const fingerprint =
+        createEmailFingerprint(
+          email
+        );
+
+      const cached =
+        processedEmailCache[
+          email.email_id
+        ];
+
+      // Already permanently cached
+      if (
+        cached &&
+        cached.fingerprint ===
+          fingerprint &&
+        cached.processingVersion ===
+          PROCESSING_VERSION
+      ) {
+        caseRepository.save(
+          cached.case
+        );
+
+        pipelineRunState.skipped++;
+
+        continue;
+      }
+
+      // --------------------------------
+      // One-time migration:
+      // case existed before we added
+      // persistent caching.
+      // --------------------------------
+      const existingCase =
+        caseRepository
+          .getAll()
+          .find(
+            (item) =>
+              item.emailId ===
+              email.email_id
+          );
+
+      if (
+        existingCase &&
+        !cached
+      ) {
+        processedEmailCache[
+          email.email_id
+        ] = {
+          processedAt:
+            new Date()
+              .toISOString(),
+
+          fingerprint,
+
+          processingVersion:
+            PROCESSING_VERSION,
+
+          case: existingCase,
+        };
+
+        pipelineRunState.skipped++;
+
+        continue;
+      }
+
+      // New or changed email
+      queue.push({
+        email,
+        fingerprint,
+      });
+    }
+
+    if (
+      pipelineRunState.skipped >
+      0
+    ) {
+      await saveProcessedEmailCache();
+    }
+
+    // --------------------------------------------------
+    // No changes = no Gemini + no terminal noise
+    // --------------------------------------------------
+    if (queue.length === 0) {
+      return;
+    }
+
+    // Only log when there is actual work
+    console.log(
+      `[Pipeline] Detected ${queue.length} new/changed email(s)`
+    );
+
+    console.log(
+      `[Pipeline] Inbox total: ${emails.length}`
+    );
+
+
+    const MAX_AUTO_PROCESS = 5;
+
+    const processingQueue =
+      queue.slice(0, MAX_AUTO_PROCESS);
+
+    console.log(
+      `[Pipeline] Processing this run: ${processingQueue.length}`
+    );
+
+    // ----------------------------------
+    // Only new/changed emails enter
+    // Gemini / DS1 / DS2.
+    // ----------------------------------
+    for (
+      let index = 0;
+      index < processingQueue.length;
+      index++
+    ) {
+      const {
+        email,
+        fingerprint,
+      } = processingQueue[index];
+
+      pipelineRunState.currentEmailId =
+        email.email_id;
+
+      console.log(
+        `[Pipeline] New email ${index + 1}/${processingQueue.length}: ${email.email_id}`
+      );
+
+      try {
+        const shipmentCase =
+          await processEmailPipeline(
+            email,
+            internalPostJson
+          );
+
+        caseRepository.save(
+          shipmentCase
+        );
+
+        // Only mark as processed after
+        // successful completion.
+        processedEmailCache[
+          email.email_id
+        ] = {
+          processedAt:
+            new Date()
+              .toISOString(),
+
+          fingerprint,
+
+          processingVersion:
+            PROCESSING_VERSION,
+
+          case: shipmentCase,
+        };
+
+        await saveProcessedEmailCache();
+
+        const events =
+          orchestrateCase(
+            shipmentCase
+          );
+
+        await auditRepository.append(
+          events
+        );
+
+        pipelineRunState.processed++;
+
+        console.log(
+          `[Pipeline] Completed ${email.email_id}`
+        );
+      } catch (error: any) {
+        const message =
+          error?.message ||
+          "Unknown processing error";
+
+        pipelineRunState.failed++;
+
+        pipelineRunState
+          .failures
+          .push({
+            emailId:
+              email.email_id,
+            error: message,
+          });
+
+        console.error(
+          `[Pipeline] Failed ${email.email_id}: ${message}`
+        );
+
+        // IMPORTANT:
+        // Don't burn more requests while
+        // the quota window is exhausted.
+        if (
+          message.includes(
+            "429"
+          ) ||
+          message
+            .toLowerCase()
+            .includes(
+              "quota"
+            )
+        ) {
+          console.warn(
+            "[Pipeline] Gemini quota reached. Remaining emails will be retried on the next inbox check."
+          );
+
+          break;
+        }
+      }
+    }
+  } catch (error: any) {
+    console.error(
+      "[Pipeline] Inbox processing failed:",
+      error
+    );
+  } finally {
+    pipelineRunState.running =
+      false;
+
+    pipelineRunState.currentEmailId =
+      null;
+
+    pipelineRunState.finishedAt =
+      new Date().toISOString();
+  }
+}
+
+app.post(
+  "/api/pipeline/process-new",
+  (_req, res) => {
+    if (
+      pipelineRunState.running
+    ) {
+      return res
+        .status(409)
+        .json({
+          success: false,
+          message:
+            "Inbox processing is already running.",
+        });
+    }
+
+    void processNewEmails();
+
+    return res
+      .status(202)
+      .json({
+        success: true,
+        message:
+          "New-email processing started.",
+      });
+  }
+);
+
+app.get(
+  "/api/pipeline/status",
+  (_req, res) => {
+    const completed =
+      pipelineRunState.processed +
+      pipelineRunState.failed +
+      pipelineRunState.skipped;
+
+    const progress =
+      pipelineRunState.total > 0
+        ? Math.round(
+            (
+              completed /
+              pipelineRunState.total
+            ) * 100
+          )
+        : 0;
+
+    return res.json({
+      ...pipelineRunState,
+      completed,
+      progress,
+
+      cachedEmails:
+        Object.keys(
+          processedEmailCache
+        ).length,
+
+      totalCases:
+        caseRepository
+          .getAll()
+          .length,
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// CS1 orchestration and revision workflow
+// ---------------------------------------------------------------------------
+app.post(
+  "/api/orchestration/run",
+  async (req, res) => {
+    try {
+      const caseId =
+        req.body?.caseId;
+
+      if (!caseId) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "caseId is required.",
+          });
+      }
+
+      const shipmentCase =
+        caseRepository.getById(
+          caseId
+        );
+
+      if (!shipmentCase) {
+        return res
+          .status(404)
+          .json({
+            error:
+              "Shipment case not found.",
+          });
+      }
+
+      const events =
+        orchestrateCase(
+          shipmentCase
+        );
+
+      await auditRepository.append(
+        events
+      );
+
+      return res.json({
+        success: true,
+        caseId:
+          shipmentCase.id,
+        events,
+      });
+    } catch (error: any) {
+      console.error(
+        "Orchestration failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          error:
+            error.message ||
+            "Orchestration failed",
+        });
+    }
+  }
+);
 
 app.get("/api/orchestration/events", async (req, res) => {
   try {
-    return res.json(await auditRepository.list(req.query.caseId ? String(req.query.caseId) : undefined));
+    return res.json(
+      await auditRepository.list(
+        req.query.caseId ? String(req.query.caseId) : undefined,
+      ),
+    );
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -288,7 +2362,9 @@ app.post("/api/revision/compare", (req, res) => {
   try {
     const { caseId, si, blV1, blV2 } = req.body || {};
     if (!caseId || !si || !blV1 || !blV2) {
-      return res.status(400).json({ error: "caseId, si, blV1 and blV2 are required." });
+      return res.status(400).json({
+        error: "caseId, si, blV1 and blV2 are required.",
+      });
     }
     return res.json(compareRevision(caseId, si, blV1, blV2));
   } catch (error: any) {
@@ -296,13 +2372,265 @@ app.post("/api/revision/compare", (req, res) => {
   }
 });
 
+app.post(
+  "/api/maintenance/reverify-cached",
+  async (_req, res) => {
+    try {
+      let checked = 0;
+      let updated = 0;
+      let skipped = 0;
+
+      const before = {
+        OK: 0,
+        MISMATCH: 0,
+        NEEDS_REVIEW: 0,
+      };
+
+      const after = {
+        OK: 0,
+        MISMATCH: 0,
+        NEEDS_REVIEW: 0,
+      };
+
+      // ------------------------------------------
+      // Count current BL_COMPARISON status
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          caseObj?.category !==
+          "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        if (
+          caseObj.verificationStatus in
+          before
+        ) {
+          before[
+            caseObj.verificationStatus as
+              keyof typeof before
+          ]++;
+        }
+      }
+
+      // ------------------------------------------
+      // Reverify using STORED SI/BL data only
+      //
+      // ZERO GEMINI CALLS
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          !caseObj ||
+          caseObj.category !==
+            "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        // Preserve explicit human decisions.
+        if (
+          caseObj.humanReviewed
+        ) {
+          skipped++;
+          continue;
+        }
+
+        // Don't overwrite Phase 4 revision state.
+        if (
+          caseObj.hasRevision
+        ) {
+          skipped++;
+          continue;
+        }
+
+        // Cases without usable SI/BL should remain
+        // genuine NEEDS_REVIEW cases.
+        if (
+          !caseObj.siData ||
+          !caseObj.blData
+        ) {
+          skipped++;
+          continue;
+        }
+
+        checked++;
+
+        const verification =
+          verifyDocuments(
+            caseObj.siData,
+            caseObj.blData,
+            {
+              hasSi: true,
+              hasBl: true,
+            }
+          );
+
+        const changed =
+          caseObj
+            .verificationStatus !==
+            verification.status ||
+          caseObj.reviewReason !==
+            verification
+              .reviewReason ||
+          JSON.stringify(
+            caseObj.defectFields ??
+              []
+          ) !==
+            JSON.stringify(
+              verification
+                .defectFields
+            );
+
+        const updatedCase = {
+          ...caseObj,
+
+          verificationStatus:
+            verification.status,
+
+          hasDefect:
+            verification.hasDefect,
+
+          defectFields:
+            verification
+              .defectFields,
+
+          reviewReason:
+            verification
+              .reviewReason,
+
+          fieldComparisons:
+            verification
+              .fieldComparisons,
+
+          priorityScore:
+            verification.status ===
+            "NEEDS_REVIEW"
+              ? 95
+              : verification
+                    .status ===
+                  "MISMATCH"
+                ? 80
+                : 20,
+
+          priorityReasons: [
+            verification
+              .explanation,
+          ],
+        };
+
+        entry.case =
+          updatedCase;
+
+        entry.processedAt =
+          new Date()
+            .toISOString();
+
+        caseRepository.save(
+          updatedCase
+        );
+
+        if (changed) {
+          updated++;
+        }
+      }
+
+      // ------------------------------------------
+      // Persist corrected cache
+      // ------------------------------------------
+
+      await saveProcessedEmailCache();
+
+      // ------------------------------------------
+      // Count corrected results
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          caseObj?.category !==
+          "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        if (
+          caseObj.verificationStatus in
+          after
+        ) {
+          after[
+            caseObj.verificationStatus as
+              keyof typeof after
+          ]++;
+        }
+      }
+
+      return res.json({
+        success: true,
+
+        message:
+          "Cached SI/BL cases were reverified without Gemini.",
+
+        checked,
+        updated,
+        skipped,
+
+        before,
+        after,
+      });
+    } catch (
+      error: any
+    ) {
+      console.error(
+        "Cached reverification failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          error:
+            error?.message ||
+            "Cached reverification failed.",
+        });
+    }
+  }
+);
+
 // ---------------------------------------------------------------------------
-// Gemini Copilot integration. Gemini explains/summarizes; deterministic modules
-// should remain responsible for comparison and status decisions.
+// Gemini Copilot integration
 // ---------------------------------------------------------------------------
 app.post("/api/copilot/chat", async (req, res) => {
   const { prompt, context, agentId, mode } = req.body || {};
   const ai = getGeminiClient();
+
   if (!ai) {
     return res.status(503).json({
       error: "GEMINI_API_KEY is not configured.",
@@ -328,30 +2656,110 @@ app.post("/api/copilot/chat", async (req, res) => {
       model: GEMINI_MODEL,
       contents: `${roles[agentId] || roles.orchestrator}\nMode: ${mode || "collaborative"}\n\nVerified system context:\n${JSON.stringify(context || {}, null, 2)}\n\nUser request:\n${prompt}\n\nOnly use facts present in the verified system context. If evidence is missing, say it requires review.`,
     });
-    return res.json({ text: response.text, agent: agentId || "orchestrator", model: GEMINI_MODEL });
+
+    return res.json({
+      text: response.text,
+      agent: agentId || "orchestrator",
+      model: GEMINI_MODEL,
+    });
   } catch (error: any) {
     return res.status(500).json({ error: error.message || "Gemini request failed." });
   }
 });
 
-// DS1 integration endpoint: no fake OCR result when the AI service is absent.
+// ---------------------------------------------------------------------------
+// DS1 Vision OCR - accepts uploaded base64 OR an official dataset attachment path
+// ---------------------------------------------------------------------------
 app.post("/api/vision/ocr", async (req, res) => {
-  const { imageBase64, mimeType, docType } = req.body || {};
+  const {
+    imageBase64,
+    mimeType,
+    docType,
+    path: attachmentPath,
+  } = req.body || {};
+
   const ai = getGeminiClient();
-  if (!ai) return res.status(503).json({ error: "GEMINI_API_KEY is not configured." });
-  if (!imageBase64) return res.status(400).json({ error: "imageBase64 is required." });
+  if (!ai) {
+    return res.status(503).json({ error: "GEMINI_API_KEY is not configured." });
+  }
+
+  let visionBase64 = imageBase64 ? String(imageBase64) : "";
+  let visionMimeType = mimeType ? String(mimeType) : "";
 
   try {
-    const cleanBase64 = String(imageBase64).replace(/^data:[^;]+;base64,/, "");
-    const prompt = `Extract the seven required shipping fields from this ${docType || "shipping document"}. Preserve raw evidence snippets. If a required value is unreadable or ambiguous, mark it for human review instead of guessing. Return JSON only.`;
+    if (!visionBase64 && attachmentPath) {
+      const extension = extensionFromAttachment(String(attachmentPath));
+      const mimeTypes: Record<string, string> = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".pdf": "application/pdf",
+      };
+
+      const detectedMimeType = mimeTypes[extension];
+      if (!detectedMimeType) {
+        return res.status(400).json({
+          success: false,
+          error: "Unsupported Vision OCR file type",
+        });
+      }
+
+      const fileBuffer = await readAttachmentBuffer(String(attachmentPath));
+      visionBase64 = fileBuffer.toString("base64");
+      visionMimeType = detectedMimeType;
+    }
+
+    if (!visionBase64) {
+      return res.status(400).json({
+        error: "imageBase64 or an attachment path is required.",
+      });
+    }
+
+    const cleanBase64 = visionBase64.replace(/^data:[^;]+;base64,/, "");
+    const effectiveMimeType = visionMimeType || "image/png";
+
+    const prompt = `
+You are ShipSure's Multimodal Document Intelligence Agent.
+
+Read this ${docType || "Shipping Instruction or Bill of Lading"} and extract exactly:
+shipper, consignee, notify_party, port_of_loading, port_of_discharge,
+container_count, gross_weight_kg.
+
+Rules:
+- Preserve raw values as written.
+- Do not normalize values or convert units.
+- Do not guess unreadable or missing characters.
+- For each field return raw, confidence, and supporting snippet.
+- If a field cannot be reliably read, return raw as null and confidence as 0.
+- Record unclear fields in unreadableFields.
+
+Return ONLY valid JSON.`;
+
     const response = await ai.models.generateContent({
       model: GEMINI_MODEL,
-      contents: [{ inlineData: { data: cleanBase64, mimeType: mimeType || "image/png" } }, prompt],
+      contents: [
+        {
+          inlineData: {
+            data: cleanBase64,
+            mimeType: effectiveMimeType,
+          },
+        },
+        prompt,
+      ],
       config: { responseMimeType: "application/json" },
     });
-    return res.json({ success: true, source: GEMINI_MODEL, data: JSON.parse(response.text || "{}") });
+
+    return res.json({
+      success: true,
+      source: GEMINI_MODEL,
+      data: JSON.parse(response.text || "{}"),
+    });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message || "Vision extraction failed." });
+    console.error("Gemini Vision OCR Error:", error);
+    return res.status(500).json({
+      error: error.message || "Vision extraction failed.",
+    });
   }
 });
 
@@ -361,26 +2769,40 @@ app.post("/api/vision/ocr", async (req, res) => {
 app.post("/api/evaluation/submit", async (req, res) => {
   try {
     if (serverConfig.dataSource !== "DOCKER") {
-      return res.status(409).json({ error: "Switch DATA_SOURCE to DOCKER before submitting to the official scoring endpoint." });
+      return res.status(409).json({
+        error: "Switch DATA_SOURCE to DOCKER before submitting to the official scoring endpoint.",
+      });
     }
+
     const submission = req.body?.submission ?? req.body;
     if (!submission || typeof submission !== "object" || Array.isArray(submission)) {
-      return res.status(400).json({ error: "submission must be an object keyed by email_id." });
+      return res.status(400).json({
+        error: "submission must be an object keyed by email_id.",
+      });
     }
+
     const result = await fetchJson(`${dockerBase()}/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(submission),
     });
+
     return res.json(result);
   } catch (error: any) {
-    return res.status(502).json({ error: `Official scoring server unavailable: ${error.message}` });
+    return res.status(502).json({
+      error: `Official scoring server unavailable: ${error.message}`,
+    });
   }
 });
 
 async function startServer() {
+  await loadProcessedState();
+  
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
@@ -388,9 +2810,52 @@ async function startServer() {
     app.get("*", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`ShipSure AI listening on 0.0.0.0:${PORT}`);
-  });
+  app.listen(
+    PORT,
+    "0.0.0.0",
+    () => {
+      console.log(
+        `ShipSure AI listening on 0.0.0.0:${PORT}`
+      );
+
+      if (
+        process.env
+          .AUTO_PROCESS_NEW_EMAILS ===
+          "true"
+      ) {
+        const intervalMs =
+          Number(
+            process.env
+              .INBOX_POLL_INTERVAL_MS ||
+              60000
+          );
+
+        console.log(
+          `[Pipeline] New-email watcher enabled (${intervalMs} ms)`
+        );
+
+        // First check after server is ready
+        setTimeout(
+          () => {
+            void processNewEmails();
+          },
+          1500
+        );
+
+        // Continue checking inbox
+        setInterval(
+          () => {
+            if (
+              !pipelineRunState.running
+            ) {
+              void processNewEmails();
+            }
+          },
+          intervalMs
+        );
+      }
+    }
+  );
 }
 
 startServer().catch((error) => {

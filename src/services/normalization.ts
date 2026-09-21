@@ -98,27 +98,51 @@ export function normalizePort(raw: string): NormalizedFieldResult<string> {
   };
 }
 
-/**
- * Normalizes container count into an integer number
- * Handles patterns like "3 Containers", "3 x 40HC", "4 CONT"
- */
-export function normalizeContainerCount(raw: string | number): NormalizedFieldResult<number> {
+export function normalizeContainerCount(
+  raw: string | number
+): NormalizedFieldResult<string> {
   const str = String(raw || "").trim();
+
   if (!str) {
-    return { original: str, normalized: 0, isNormalized: false };
+    return {
+      original: str,
+      normalized: "",
+      isNormalized: false,
+    };
   }
 
-  // Find first digit sequence
-  const match = str.match(/(\d+)/);
-  const count = match ? parseInt(match[1], 10) : 0;
+  // Examples:
+  // 6 x 40'HC  -> "6 X 40HC"
+  // 12 x 20'GP -> "12 X 20GP"
+  const cleaned = str
+    .toUpperCase()
+    .replace(/['"]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const match = cleaned.match(/(\d+)\s*[X×]\s*(\d+)\s*(GP|HC|DC)?/);
+
+  if (match) {
+    const count = match[1];
+    const size = match[2];
+    const type = match[3] || "";
+
+    return {
+      original: str,
+      normalized: `${count} X ${size}${type}`,
+      isNormalized: true,
+    };
+  }
+
+  // Fallback when only a container count is available
+  const countMatch = cleaned.match(/\d+/);
 
   return {
     original: str,
-    normalized: count,
-    isNormalized: str !== String(count)
+    normalized: countMatch ? countMatch[0] : cleaned,
+    isNormalized: cleaned !== str,
   };
 }
-
 /**
  * Normalizes gross weight to Kilograms (KG)
  * Handles Metric Tons (MT/TONS -> x 1000), Pounds (LBS -> / 2.20462), etc.
