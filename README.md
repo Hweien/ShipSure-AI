@@ -2,52 +2,97 @@
 
 **Detect · Verify · Resolve · Learn**
 
-ShipSure AI is an AI-assisted shipping document verification platform developed for the SDOC Hackathon. It helps shipping operations teams triage incoming emails, extract Shipping Instruction (SI) and Bill of Lading (BL) data, detect discrepancies across mandatory fields, explain the evidence behind each decision, and route uncertain cases for human review.
+ShipSure AI is an AI-assisted shipping document verification platform developed for the **Averis Hackathon**. It helps shipping operations teams classify incoming emails, extract Shipping Instruction (SI) and draft Bill of Lading (BL) data, compare mandatory shipment fields, explain discrepancies, and route uncertain cases to human review.
 
-> **Official verification rule:** the Shipping Instruction (SI) is treated as the source of truth when comparing it with the draft Bill of Lading (BL).
+> **Official verification rule:** the Shipping Instruction (SI) is the source of truth when compared with the draft Bill of Lading (BL).
+
+## Demo
+
+**Live demo:** https://shipsure-ai-4.onrender.com/
+
+**Team:** `PentaQueens`
 
 ---
 
 ## Table of Contents
 
-- [Project Overview](#project-overview)
+- [Overview](#overview)
+- [How ShipSure Works](#how-shipsure-works)
 - [Core Features](#core-features)
-- [Verification Scope](#verification-scope)
+- [Official Verification Rules](#official-verification-rules)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Setup Instructions](#setup-instructions)
+- [Quick Start](#quick-start)
+- [Dataset Modes](#dataset-modes)
 - [Official SDOC Docker Setup](#official-sdoc-docker-setup)
-- [Local Dataset Setup](#local-dataset-setup)
-- [Production Build](#production-build)
-- [Docker Setup](#docker-setup)
-- [Railway Deployment](#railway-deployment)
+- [Render Deployment](#render-deployment)
 - [Evaluation and Scoring](#evaluation-and-scoring)
-- [Useful Commands](#useful-commands)
+- [Environment Variables](#environment-variables)
 - [Troubleshooting](#troubleshooting)
-- [Security Notes](#security-notes)
+- [Security](#security)
 - [Future Extension](#future-extension)
 
 ---
 
-## Project Overview
+## Overview
 
-Shipping operations teams receive large volumes of emails containing Shipping Instructions, draft Bills of Lading, invoice queries, general operational messages, and spam.
+Shipping operations teams handle high volumes of emails containing Shipping Instructions, draft Bills of Lading, invoice queries, general operational messages, and spam.
 
 Manually identifying which emails require document verification and comparing SI and BL values line by line is repetitive and error-prone.
 
-ShipSure AI provides one workflow for:
+ShipSure AI combines:
 
-1. Inbox classification
-2. SI / BL document extraction
-3. Seven-field deterministic verification
-4. Mismatch detection
-5. Evidence-based explanations
-6. Human review for uncertain cases
-7. Multi-agent case investigation
-8. Evaluation and submission generation
+- intelligent email classification
+- SI / BL document extraction
+- deterministic seven-field verification
+- evidence-based discrepancy review
+- zero-guess human escalation
+- multimodal Vision OCR
+- multi-agent case investigation
+- evaluation and submission generation
 
-The system follows a **zero-guess policy**: when a value is missing, unreadable, or cannot be compared confidently, the case is routed to human review instead of silently inventing a value.
+The system follows a **zero-guess policy**: if required information is missing, unreadable, or cannot be verified confidently, the case is sent to human review instead of inventing a value.
+
+---
+
+## How ShipSure Works
+
+```text
+Incoming Email
+     │
+     ▼
+Email Classification
+     │
+     ├── SI_REQUEST
+     ├── INVOICE_QUERY
+     ├── GENERAL
+     ├── SPAM
+     │
+     └── BL_COMPARISON
+              │
+              ▼
+      SI / Draft BL Identification
+              │
+              ▼
+         Field Extraction
+              │
+              ▼
+      Deterministic Normalization
+              │
+              ▼
+       Seven-Field Comparison
+              │
+      ┌───────┼──────────┐
+      ▼       ▼          ▼
+     OK    MISMATCH  NEEDS_REVIEW
+                          │
+                          ▼
+                     Human Review
+```
+
+Only `BL_COMPARISON` cases continue into the official SI ↔ BL verification workflow.
+
+ShipSure uses a baseline processed-case cache plus runtime state. Runtime updates can override baseline entries for the same email during execution.
 
 ---
 
@@ -55,7 +100,7 @@ The system follows a **zero-guess policy**: when a value is missing, unreadable,
 
 ### Intelligent Inbox
 
-Incoming emails are classified into the official SDOC categories:
+Emails are classified into the five official SDOC categories:
 
 - `BL_COMPARISON`
 - `SI_REQUEST`
@@ -63,45 +108,60 @@ Incoming emails are classified into the official SDOC categories:
 - `GENERAL`
 - `SPAM`
 
-Only relevant BL comparison requests continue into the document verification workflow.
-
 ### SI ↔ BL Verification
 
-ShipSure extracts and compares the required fields from the Shipping Instruction and draft Bill of Lading.
-
-Possible verification outcomes:
-
-- `OK`
-- `MISMATCH`
-- `NEEDS_REVIEW`
+For BL comparison cases, ShipSure identifies the SI and draft BL, extracts the required fields, normalizes the values, and performs a deterministic comparison.
 
 ### Evidence and Explainability
 
-Operators can inspect supporting evidence such as:
+The verification interface can show:
 
-- extracted raw values
+- original extracted values
 - normalized values
+- SI and BL evidence snippets
 - confidence information
-- supporting text snippets
-- field-level comparison results
+- field-level comparison status
+- overall verification decision
 
 ### Human Review
 
-Cases with missing attachments, unreadable content, missing values, or uncertain extraction can be escalated for human review.
+Uncertain cases are routed to review when ShipSure encounters:
+
+- `wrong_doc_type`
+- `missing_attachment`
+- `unreadable`
+- `missing_value`
+
+For `NEEDS_REVIEW` cases:
+
+```text
+has_defect = false
+defect_fields = []
+```
+
+### Multimodal Vision OCR
+
+ShipSure includes Gemini-powered Vision OCR support for difficult images and scans. The OCR workflow is designed to surface uncertainty instead of silently guessing unclear characters or values.
 
 ### Multi-Agent Operations War Room
 
-Specialized agents help investigate cases, explain discrepancies, inspect review requirements, and support resolution workflows using the selected shipment's real case data.
+The multi-agent interface supports case investigation, discrepancy explanation, review reasoning, resolution support, and operational coordination using selected shipment data.
+
+### Analytics, Watchdog, and Audit
+
+The application also includes operational analytics, monitoring views, and agent activity/audit information for tracing case processing and decisions.
 
 ### Evaluation and Scoring
 
-ShipSure can generate predictions in the official submission format and, when connected to the official SDOC Docker API, submit them to the scoring endpoint.
+ShipSure can generate predictions in the official submission structure and submit them to the organizer scoring API when connected to the official SDOC service.
 
 ---
 
-## Verification Scope
+## Official Verification Rules
 
-The official BL comparison workflow checks exactly seven mandatory fields:
+### Seven Mandatory Fields
+
+The official BL comparison workflow checks exactly:
 
 1. `shipper`
 2. `consignee`
@@ -111,7 +171,37 @@ The official BL comparison workflow checks exactly seven mandatory fields:
 6. `container_count`
 7. `gross_weight_kg`
 
-The **Shipping Instruction is the source of truth**.
+The **SI is always the source of truth**.
+
+### Overall Status
+
+ShipSure produces one of three outcomes:
+
+- `OK`
+- `MISMATCH`
+- `NEEDS_REVIEW`
+
+Decision logic:
+
+```text
+All 7 fields match
+→ OK
+
+At least 1 confirmed field difference
+→ MISMATCH
+
+Missing / unreadable / invalid comparison evidence
+→ NEEDS_REVIEW
+```
+
+### Field-Level Status
+
+Individual fields can be marked as:
+
+- `EXACT_MATCH`
+- `NORMALIZED_MATCH`
+- `MISMATCH`
+- `NEEDS_REVIEW`
 
 ---
 
@@ -119,12 +209,13 @@ The **Shipping Instruction is the source of truth**.
 
 ### Frontend
 
-- React
+- React 19
 - TypeScript
 - Vite
 - Tailwind CSS
 - Lucide React
 - Recharts
+- Motion
 
 ### Backend
 
@@ -132,21 +223,21 @@ The **Shipping Instruction is the source of truth**.
 - Express
 - TypeScript
 - Gemini API
-- PDF / Word / spreadsheet document processing
-- Deterministic normalization and comparison services
+- PDF processing with `pdf-parse`
+- Word processing with `mammoth`
+- spreadsheet processing with `exceljs`
+- deterministic normalization and comparison services
 
 ### Infrastructure
 
 - Docker
 - Docker Compose
-- Official SDOC Docker API
-- Railway for cloud demo deployment
+- official SDOC FastAPI service
+- Render cloud deployment
 
 ---
 
 ## Project Structure
-
-A simplified project structure is shown below:
 
 ```text
 ShipSure-AI/
@@ -157,8 +248,7 @@ ShipSure-AI/
 │   └── sdoc-hackathon-docker/
 │       ├── data_v2/
 │       ├── server/
-│       ├── docker-compose.yml
-│       └── README.md
+│       └── docker-compose.yml
 │
 ├── runtime/
 │   ├── agent-events.json
@@ -166,110 +256,79 @@ ShipSure-AI/
 │   └── processed-email-cases.json
 │
 ├── server/
-│   ├── contracts/
 │   └── services/
 │
 ├── src/
 │   ├── components/
 │   └── services/
 │
+├── cloud-data/
 ├── server.ts
 ├── Dockerfile
+├── Dockerfile.inbox
 ├── package.json
 ├── .env.example
 └── README.md
 ```
 
-The shared baseline cache is stored at:
+Important files:
 
 ```text
 data/baseline-processed-email-cases.json
 ```
 
-The local SDOC dataset is stored at:
+stores the bundled processed-case baseline.
 
 ```text
 datasets/sdoc-hackathon-docker/data_v2
 ```
 
----
+contains the local organizer dataset.
 
-## Prerequisites
-
-For local development:
-
-- **Node.js 22 recommended**
-- npm
-- Git
-- Docker Desktop if using the official SDOC Docker API
-- Gemini API key for AI-powered extraction and reasoning
-
-Check the installations:
-
-```bash
-node --version
-npm --version
-git --version
-docker --version
-docker compose version
+```text
+Dockerfile.inbox
 ```
 
+builds the participant-safe SDOC inbox API used for cloud deployment.
+
 ---
 
-# Setup Instructions
+## Quick Start
 
-## 1. Clone the Repository
+### 1. Clone the repository
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
+git clone https://github.com/Hweien/ShipSure-AI.git
 cd ShipSure-AI
 ```
 
----
-
-## 2. Install Dependencies
-
-Use:
+### 2. Install dependencies
 
 ```bash
 npm ci
 ```
 
-If the project is being set up without a lockfile, use:
+### 3. Create `.env`
 
-```bash
-npm install
-```
-
----
-
-## 3. Configure Environment Variables
-
-Copy the example environment file.
-
-### Windows PowerShell
+Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-### macOS / Linux
+macOS / Linux:
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and configure the required values.
-
-Example:
+Recommended local Docker configuration:
 
 ```env
 PORT=3000
 
 DATA_SOURCE=DOCKER
 DATA_API_URL=http://localhost:8080
-
-DATA_PATH=./datasets/sdoc-hackathon-docker/data_v2
 
 GEMINI_API_KEY=your_real_gemini_api_key
 GEMINI_MODEL=gemini-3.1-flash-lite
@@ -281,47 +340,9 @@ REQUEST_TIMEOUT_MS=90000
 ENABLE_REVISION_INTELLIGENCE=false
 ```
 
-> Never commit the real `.env` file or API keys to Git.
+Never commit a real `.env` file or API key.
 
----
-
-## 4. Choose a Dataset Mode
-
-ShipSure supports three dataset modes.
-
-### `DEMO`
-
-Synthetic frontend demo data.
-
-```env
-DATA_SOURCE=DEMO
-```
-
-### `LOCAL`
-
-Reads the SDOC dataset directly from the local filesystem.
-
-```env
-DATA_SOURCE=LOCAL
-DATA_PATH=./datasets/sdoc-hackathon-docker/data_v2
-```
-
-### `DOCKER`
-
-Connects to the official SDOC Docker API.
-
-```env
-DATA_SOURCE=DOCKER
-DATA_API_URL=http://localhost:8080
-```
-
-For **official evaluation and scoring**, use `DOCKER`.
-
----
-
-## 5. Start ShipSure
-
-From the project root:
+### 4. Start ShipSure
 
 ```bash
 npm run dev
@@ -341,60 +362,81 @@ http://localhost:3000/api/health
 
 ---
 
-# Official SDOC Docker Setup
+## Dataset Modes
 
-Use this mode when you want ShipSure to interact with the official SDOC dataset API and scoring endpoint.
+ShipSure supports three dataset modes.
 
-From the ShipSure project root:
+### `DEMO`
 
-```bash
-cd datasets/sdoc-hackathon-docker
+Uses synthetic/demo data.
+
+```env
+DATA_SOURCE=DEMO
 ```
 
-Start the organizer Docker service:
+### `LOCAL`
 
-```bash
-docker compose up --build
+Reads the SDOC dataset directly from the filesystem.
+
+```env
+DATA_SOURCE=LOCAL
+DATA_PATH=./datasets/sdoc-hackathon-docker/data_v2
 ```
 
-The official API should be available at:
+### `DOCKER`
 
-```text
-http://localhost:8080
-```
-
-Test it:
-
-```text
-http://localhost:8080/health
-```
-
-Then return to the ShipSure root:
-
-```bash
-cd ../..
-```
-
-Configure `.env`:
+Reads dataset content through the official SDOC API.
 
 ```env
 DATA_SOURCE=DOCKER
 DATA_API_URL=http://localhost:8080
 ```
 
-Start ShipSure:
+Use `DOCKER` mode when working with the organizer API or official scoring endpoint.
+
+---
+
+## Official SDOC Docker Setup
+
+From the project root:
+
+```bash
+cd datasets/sdoc-hackathon-docker
+docker compose up --build
+```
+
+The organizer API should be available at:
+
+```text
+http://localhost:8080
+```
+
+Test:
+
+```text
+http://localhost:8080/health
+```
+
+Return to the ShipSure root:
+
+```bash
+cd ../..
+```
+
+Configure ShipSure:
+
+```env
+DATA_SOURCE=DOCKER
+DATA_API_URL=http://localhost:8080
+```
+
+Then run:
 
 ```bash
 npm run dev
 ```
 
-ShipSure will run at:
-
-```text
-http://localhost:3000
-```
-
-The architecture is:
+Local architecture:
 
 ```text
 Browser
@@ -408,135 +450,74 @@ Official SDOC API
 localhost:8080
 ```
 
+If ShipSure itself runs inside Docker while the organizer API runs on the host, use:
+
+```env
+DATA_API_URL=http://host.docker.internal:8080
+```
+
 ---
 
-# Local Dataset Setup
+## Render Deployment
 
-If the official Docker API is not required, ShipSure can read the dataset directly from:
+The cloud demo is deployed on **Render** using two services from the same repository.
 
 ```text
-datasets/sdoc-hackathon-docker/data_v2
+Render
+
+ShipSure Web Service
+Dockerfile
+React + Express + Gemini
+        │
+        ▼
+SDOC Inbox Service
+Dockerfile.inbox
+FastAPI + participant-safe dataset
+```
+
+### 1. SDOC Inbox Service
+
+Create a Render service using:
+
+```text
+Dockerfile: ./Dockerfile.inbox
+```
+
+`Dockerfile.inbox`:
+
+- uses Python 3.12
+- installs the official SDOC API dependencies
+- copies the organizer API code
+- copies `cloud-data/` into `/data`
+- exposes port `8000`
+
+The inbox container uses:
+
+```env
+DATA_DIR=/data
+GROUND_TRUTH=/secrets/ground_truth.json
+REVEAL_GT=0
+```
+
+Do not place `ground_truth.json` inside `cloud-data/` or commit it to the public repository.
+
+### 2. ShipSure Web Service
+
+Create the main Render service using:
+
+```text
+Dockerfile: ./Dockerfile
 ```
 
 Configure:
 
 ```env
-DATA_SOURCE=LOCAL
-DATA_PATH=./datasets/sdoc-hackathon-docker/data_v2
-```
-
-Then start:
-
-```bash
-npm run dev
-```
-
-This mode is useful for development and cloud demos.
-
-> Official scoring through `/submit` requires `DATA_SOURCE=DOCKER`.
-
----
-
-# Production Build
-
-Run the TypeScript check:
-
-```bash
-npm run lint
-```
-
-Build the frontend and backend:
-
-```bash
-npm run build
-```
-
-Set:
-
-```env
 NODE_ENV=production
-```
 
-Then start the production server:
-
-```bash
-npm start
-```
-
-The application will be served by the Express backend using the generated `dist/` build.
-
----
-
-# Docker Setup
-
-The project includes a root Dockerfile.
-
-Build the ShipSure image:
-
-```bash
-docker build -t shipsure-ai .
-```
-
-For a standalone container using the dataset bundled inside the image:
-
-```bash
-docker run --rm \
-  -p 3000:3000 \
-  --env-file .env \
-  -e NODE_ENV=production \
-  -e DATA_SOURCE=LOCAL \
-  -e DATA_PATH=/app/datasets/sdoc-hackathon-docker/data_v2 \
-  shipsure-ai
-```
-
-On Windows PowerShell:
-
-```powershell
-docker run --rm `
-  -p 3000:3000 `
-  --env-file .env `
-  -e NODE_ENV=production `
-  -e DATA_SOURCE=LOCAL `
-  -e DATA_PATH=/app/datasets/sdoc-hackathon-docker/data_v2 `
-  shipsure-ai
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
-### ShipSure Container + Official Docker API
-
-When ShipSure itself runs inside Docker while the official SDOC API runs on Docker Desktop on the host machine, `localhost:8080` points back to the ShipSure container.
-
-Use:
-
-```env
 DATA_SOURCE=DOCKER
-DATA_API_URL=http://host.docker.internal:8080
-```
+DATA_API_URL=<YOUR_RENDER_INBOX_URL_OR_INTERNAL_ADDRESS>
 
-For a shared Docker Compose network, use the service hostname configured by the Compose file instead.
-
----
-
-# Railway Deployment
-
-Railway can build ShipSure directly from the root `Dockerfile`.
-
-## Recommended Preliminary-Round Deployment
-
-For the public cloud demo, use the bundled local dataset:
-
-```env
-NODE_ENV=production
-
-DATA_SOURCE=LOCAL
-DATA_PATH=/app/datasets/sdoc-hackathon-docker/data_v2
-
-GEMINI_API_KEY=<RAILWAY_SECRET>
+GEMINI_API_KEY=your_real_gemini_api_key
 GEMINI_MODEL=gemini-3.1-flash-lite
 
 AUTO_PROCESS_NEW_EMAILS=false
@@ -546,141 +527,136 @@ REQUEST_TIMEOUT_MS=90000
 ENABLE_REVISION_INTELLIGENCE=false
 ```
 
-### Railway Steps
+`DATA_PATH` is **not required** on the ShipSure Render service in this architecture because ShipSure reads data through `DATA_API_URL`.
 
-1. Push the latest ShipSure code to GitHub.
-2. Create a Railway project.
-3. Select **Deploy from GitHub Repo**.
-4. Select the ShipSure repository.
-5. Railway should detect the root `Dockerfile`.
-6. Add the environment variables above under **Variables**.
-7. Deploy the service.
-8. Open **Settings → Networking → Generate Domain**.
-9. Test the generated public URL.
+Use either the inbox service's Render URL or the exact internal address provided by Render.
 
-Do not hardcode `PORT` for Railway unless required. The ShipSure backend reads:
-
-```ts
-process.env.PORT
-```
-
-and falls back to `3000` locally.
-
-Verify the deployment with:
+Set the ShipSure health check to:
 
 ```text
-https://<YOUR-RAILWAY-DOMAIN>/api/health
+/api/health
 ```
 
-The expected dataset configuration for the simplified cloud deployment is:
+Current public demo:
 
 ```text
-DATA_SOURCE=LOCAL
-DATA_PATH=/app/datasets/sdoc-hackathon-docker/data_v2
+https://shipsure-ai-4.onrender.com/
 ```
 
-The official SDOC scoring server can remain local for preliminary evaluation.
+Health endpoint:
+
+```text
+https://shipsure-ai-4.onrender.com/api/health
+```
+
+### Cloud Scoring Note
+
+`Dockerfile.inbox` intentionally does not copy private ground truth into the image.
+
+Therefore, official `/submit` scoring requires private ground truth to be provided securely at runtime. For development and official scoring, use the local organizer Docker service unless a secure hosted scoring environment is required.
 
 ---
 
-# Evaluation and Scoring
+## Evaluation and Scoring
 
-For official scoring:
+The Evaluation view builds the official submission structure from dataset emails and ShipSure prediction cases.
 
-1. Start the official SDOC Docker service.
-2. Run ShipSure with:
+Example:
+
+```json
+{
+  "category": "BL_COMPARISON",
+  "status": "OK",
+  "review_reason": null,
+  "defect_fields": [],
+  "has_defect": false
+}
+```
+
+For official local scoring:
+
+1. Start the organizer Docker API.
+2. Configure:
 
 ```env
 DATA_SOURCE=DOCKER
 DATA_API_URL=http://localhost:8080
 ```
 
-3. Open **Evaluation & Scoring** in ShipSure.
-4. Generate the submission from the complete dataset.
-5. Submit the prediction to the official scoring API.
+3. Start ShipSure.
+4. Open **Evaluation & Scoring**.
+5. Generate the submission.
+6. Submit it to the organizer scoring endpoint.
 
-The backend proxies official submissions to:
+ShipSure application logic must **never** read or use `ground_truth.json` to generate predictions.
 
-```text
-POST /submit
+---
+
+## Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `PORT` | Express server port. Defaults to `3000` locally. |
+| `DATA_SOURCE` | `DEMO`, `LOCAL`, or `DOCKER`. |
+| `DATA_API_URL` | Official SDOC API URL when using `DOCKER`. |
+| `DATA_PATH` | Dataset filesystem path when using `LOCAL`. |
+| `GEMINI_API_KEY` | Server-side Gemini API key. |
+| `GEMINI_MODEL` | Gemini model used by AI-assisted features. |
+| `AUTO_PROCESS_NEW_EMAILS` | Enables automatic inbox processing. |
+| `INBOX_POLL_INTERVAL_MS` | Polling interval for automatic processing. |
+| `REQUEST_TIMEOUT_MS` | Timeout for relevant API requests. |
+| `ENABLE_REVISION_INTELLIGENCE` | Enables the experimental revision workflow. |
+
+Recommended:
+
+```env
+GEMINI_MODEL=gemini-3.1-flash-lite
+ENABLE_REVISION_INTELLIGENCE=false
 ```
 
-through the configured SDOC Docker API.
-
-ShipSure application logic must never use `ground_truth.json` to generate predictions.
-
 ---
 
-# Useful Commands
+## Troubleshooting
 
-| Command | Purpose |
-|---|---|
-| `npm ci` | Install project dependencies |
-| `npm run dev` | Start local development server |
-| `npm run lint` | Run TypeScript validation |
-| `npm run build` | Build frontend and backend |
-| `npm start` | Start production server |
-| `docker build -t shipsure-ai .` | Build ShipSure Docker image |
-| `docker compose up --build` | Start a Compose environment |
-| `docker compose down` | Stop Compose services |
+### No emails or cases appear
 
----
-
-# Troubleshooting
-
-## ShipSure opens but no cases appear
-
-Confirm the active data source using:
+Check:
 
 ```text
 http://localhost:3000/api/health
 ```
 
-For local mode, confirm:
+For local mode:
 
 ```env
 DATA_SOURCE=LOCAL
 DATA_PATH=./datasets/sdoc-hackathon-docker/data_v2
 ```
 
-For Docker mode, confirm:
+For Docker mode:
 
 ```env
 DATA_SOURCE=DOCKER
 DATA_API_URL=http://localhost:8080
 ```
 
----
+### Organizer Docker API is unavailable
 
-## Docker API is unreachable
-
-Check that the organizer Docker service is running:
+Run:
 
 ```bash
 docker ps
 ```
 
-Then open:
+Then test:
 
 ```text
 http://localhost:8080/health
 ```
 
----
+### Gemini features are unavailable
 
-## Settings returns to DEMO mode
-
-Verify the real backend configuration at:
-
-```text
-http://localhost:3000/api/config
-```
-
----
-
-## Gemini features are unavailable
-
-Check that `.env` contains:
+Confirm:
 
 ```env
 GEMINI_API_KEY=your_real_key
@@ -688,72 +664,48 @@ GEMINI_API_KEY=your_real_key
 
 Then restart ShipSure.
 
-Never expose this key in frontend code or commit it to Git.
+### Render ShipSure cannot reach the inbox service
+
+Confirm:
+
+- the inbox service deployed successfully from `Dockerfile.inbox`
+- `cloud-data/` was included in the build
+- `DATA_SOURCE=DOCKER`
+- `DATA_API_URL` points to the real Render inbox address
 
 ---
 
-## Railway deployment cannot find the dataset
+## Security
 
-The correct container path is:
-
-```text
-/app/datasets/sdoc-hackathon-docker/data_v2
-```
-
-Use:
-
-```env
-DATA_SOURCE=LOCAL
-DATA_PATH=/app/datasets/sdoc-hackathon-docker/data_v2
-```
-
-The shared 520-case baseline is expected at:
-
-```text
-/app/data/baseline-processed-email-cases.json
-```
-
----
-
-# Security Notes
-
-- Never commit `.env`.
-- Never commit real API keys.
+- Never commit `.env` or real API keys.
 - Keep Gemini credentials server-side.
-- Do not expose the official ground-truth file to application logic.
-- Do not use `ground_truth.json` for classification, extraction, verification, or prediction generation.
-- Keep experimental features disabled during official evaluation unless explicitly required.
+- Never use `ground_truth.json` for classification, extraction, verification, or prediction generation.
+- Keep participant-safe cloud data separate from private scoring labels.
+
+The repository ignores:
+
+```text
+datasets/sdoc-hackathon-docker/data_v2/ground_truth.json
+```
 
 ---
 
-# Future Extension
+## Future Extension
 
 ShipSure contains experimental **Version Intelligence** support for future BL revision workflows.
 
-It can be controlled using:
+It is controlled by:
 
 ```env
 ENABLE_REVISION_INTELLIGENCE=false
 ```
 
-The feature is disabled by default for the official SDOC evaluation workflow.
-
----
-
-## Demo
-
-Add the preliminary-round demo link here once available:
-
-```text
-https://shipsure-ai-4.onrender.com/
-```
+The feature is disabled by default and is not part of the official seven-field SDOC evaluation workflow.
 
 ---
 
 ## Team
 
-**Team:** `PentaQueens`
-
-**Project:** ShipSure AI
-
+**Team:** `PentaQueens`  
+**Project:** ShipSure AI  
 **Tagline:** Detect · Verify · Resolve · Learn
