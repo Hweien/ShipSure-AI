@@ -630,10 +630,52 @@ app.post("/api/ds1/read-document", async (req, res) => {
       content = lines.join("\n");
       fileType = "xlsx";
     } else if (extension === ".pdf") {
-      const parser = new PDFParse({ data });
-      const result = await parser.getText();
-      content = result.text;
       fileType = "pdf";
+
+      const parser = new PDFParse({
+        data
+      });
+
+      try {
+        const result =
+          await parser.getText();
+
+        content =
+          result.text?.trim() || "";
+
+        // A valid PDF with no extractable text
+        // may be a scanned/image PDF.
+        if (!content) {
+          console.warn(
+            `[Document Reader] PDF contains no extractable text: ${attachmentPath}`
+          );
+        }
+      } catch (error: any) {
+        console.warn(
+          `[Document Reader] Unreadable PDF: ${attachmentPath} - ${error.message}`
+        );
+
+        // IMPORTANT:
+        // Do not return HTTP 500.
+        // Let the pipeline route this to Human Review.
+        content = "";
+
+        try {
+          await parser.destroy();
+        } catch {
+          // Ignore cleanup failure.
+        }
+
+        return res.json({
+          path: attachmentPath,
+          fileType: "pdf",
+          content: "",
+          unreadable: true,
+          readError:
+            "invalid_pdf_structure"
+        });
+      }
+
       await parser.destroy();
     } else if (extension === ".docx") {
       const result = await mammoth.extractRawText({ buffer: data });
