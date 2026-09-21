@@ -47,32 +47,79 @@ export function normalizeFieldValue(
     case "shipper":
     case "consignee":
     case "notify_party":
-      return normalizeEntityName(String(raw)).normalized;
+      return normalizeEntityName(
+        String(raw)
+      ).normalized;
 
     case "port_of_loading":
     case "port_of_discharge":
-      return normalizePort(String(raw)).normalized;
+      return normalizePort(
+        String(raw)
+      ).normalized;
 
     case "container_count":
-      return normalizeContainerCount(raw).normalized;
+      return normalizeContainerCount(
+        raw
+      ).normalized;
 
     case "gross_weight_kg":
-      return normalizeGrossWeight(raw).normalized;
+      return normalizeGrossWeight(
+        raw
+      ).normalized;
   }
 }
 
 export function normalizeDocumentFields(
   document: ExtractedDocumentFields
 ): ExtractedDocumentFields {
-  for (const field of COMPARISON_FIELDS) {
-    const item = document.fields[field];
+  for (
+    const field of
+    COMPARISON_FIELDS
+  ) {
+    const item =
+      document.fields[field];
 
-    if (item?.raw != null) {
-      item.normalized = normalizeFieldValue(field, item.raw);
+    if (
+      item?.raw !== null &&
+      item?.raw !== undefined
+    ) {
+      item.normalized =
+        normalizeFieldValue(
+          field,
+          item.raw
+        );
     }
   }
 
   return document;
+}
+
+function isMissingValue(
+  raw: unknown
+): boolean {
+  if (
+    raw === null ||
+    raw === undefined
+  ) {
+    return true;
+  }
+
+  const value =
+    String(raw)
+      .trim()
+      .toUpperCase();
+
+  if (!value) {
+    return true;
+  }
+
+  return (
+    value === "TBA" ||
+    value === "N/A" ||
+    value === "NA" ||
+    /^\?+$/.test(value) ||
+    /^_+$/.test(value)
+  );
 }
 
 /**
@@ -169,42 +216,107 @@ export function verifyDocuments(
     }
 
     // Check if either is completely missing
-    if (!siField || !blField || siField.normalized === undefined || blField.normalized === undefined) {
+    if (
+      !siField ||
+      !blField ||
+      isMissingValue(siField.raw) ||
+      isMissingValue(blField.raw)
+    ) {
       missingValueDetected = true;
+
       fieldComparisons.push({
         field,
         label,
-        siEvidence: siField
-          ? {
-              documentType: "SI",
-              originalValue: String(siField.raw || ""),
-              normalizedValue: siField.normalized ?? "",
-              snippet: siField.snippet,
-              confidence: "MEDIUM"
-            }
-          : null,
-        blEvidence: blField
-          ? {
-              documentType: "BL",
-              originalValue: String(blField.raw || ""),
-              normalizedValue: blField.normalized ?? "",
-              snippet: blField.snippet,
-              confidence: "MEDIUM"
-            }
-          : null,
-        status: "NEEDS_REVIEW",
-        notes: `Field value missing in ${!siField ? "Shipping Instruction (SI)" : "Draft Bill of Lading (BL)"}`
+
+        siEvidence:
+          siField &&
+          !isMissingValue(
+            siField.raw
+          )
+            ? {
+                documentType: "SI",
+                originalValue:
+                  String(
+                    siField.raw
+                  ),
+
+                normalizedValue:
+                  normalizeFieldValue(
+                    field,
+                    siField.raw!
+                  ),
+
+                snippet:
+                  siField.snippet,
+
+                confidence:
+                  "MEDIUM",
+              }
+            : null,
+
+        blEvidence:
+          blField &&
+          !isMissingValue(
+            blField.raw
+          )
+            ? {
+                documentType: "BL",
+
+                originalValue:
+                  String(
+                    blField.raw
+                  ),
+
+                normalizedValue:
+                  normalizeFieldValue(
+                    field,
+                    blField.raw!
+                  ),
+
+                snippet:
+                  blField.snippet,
+
+                confidence:
+                  "MEDIUM",
+              }
+            : null,
+
+        status:
+          "NEEDS_REVIEW",
+
+        notes:
+          `Required value missing for ${label}`,
       });
+
       continue;
     }
+
+    const normalizedSi =
+      normalizeFieldValue(
+        field,
+        siField.raw!
+      );
+
+    const normalizedBl =
+      normalizeFieldValue(
+        field,
+        blField.raw!
+      );
 
     // Perform Field-Specific Comparison
     let matchStatus: FieldMatchStatus = "MISMATCH";
     let notes = "";
 
     if (field === "container_count" || field === "gross_weight_kg") {
-      const numSi = Number(siField.normalized);
-      const numBl = Number(blField.normalized);
+      const numSi =
+        Number(
+          normalizedSi
+        );
+
+      const numBl =
+        Number(
+          normalizedBl
+        );
 
       if (numSi === numBl) {
         matchStatus = String(siField.raw).trim() === String(blField.raw).trim() ? "EXACT_MATCH" : "NORMALIZED_MATCH";
@@ -219,8 +331,15 @@ export function verifyDocuments(
       // String / Entity / Port comparison
       const rawSi = String(siField.raw || "").trim();
       const rawBl = String(blField.raw || "").trim();
-      const normSi = String(siField.normalized || "").trim();
-      const normBl = String(blField.normalized || "").trim();
+      const normSi =
+        String(
+          normalizedSi
+        ).trim();
+
+      const normBl =
+        String(
+          normalizedBl
+        ).trim();
 
       if (rawSi.toUpperCase() === rawBl.toUpperCase()) {
         matchStatus = "EXACT_MATCH";
@@ -241,14 +360,14 @@ export function verifyDocuments(
       siEvidence: {
         documentType: "SI",
         originalValue: String(siField.raw),
-        normalizedValue: siField.normalized,
+        normalizedValue: normalizedSi,
         snippet: siField.snippet,
         confidence: "HIGH"
       },
       blEvidence: {
         documentType: "BL",
         originalValue: String(blField.raw),
-        normalizedValue: blField.normalized ?? "",
+        normalizedValue: normalizedBl ?? "",
         snippet: blField.snippet,
         confidence: "HIGH"
       },

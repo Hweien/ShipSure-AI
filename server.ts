@@ -2336,6 +2336,258 @@ app.post("/api/revision/compare", (req, res) => {
   }
 });
 
+app.post(
+  "/api/maintenance/reverify-cached",
+  async (_req, res) => {
+    try {
+      let checked = 0;
+      let updated = 0;
+      let skipped = 0;
+
+      const before = {
+        OK: 0,
+        MISMATCH: 0,
+        NEEDS_REVIEW: 0,
+      };
+
+      const after = {
+        OK: 0,
+        MISMATCH: 0,
+        NEEDS_REVIEW: 0,
+      };
+
+      // ------------------------------------------
+      // Count current BL_COMPARISON status
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          caseObj?.category !==
+          "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        if (
+          caseObj.verificationStatus in
+          before
+        ) {
+          before[
+            caseObj.verificationStatus as
+              keyof typeof before
+          ]++;
+        }
+      }
+
+      // ------------------------------------------
+      // Reverify using STORED SI/BL data only
+      //
+      // ZERO GEMINI CALLS
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          !caseObj ||
+          caseObj.category !==
+            "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        // Preserve explicit human decisions.
+        if (
+          caseObj.humanReviewed
+        ) {
+          skipped++;
+          continue;
+        }
+
+        // Don't overwrite Phase 4 revision state.
+        if (
+          caseObj.hasRevision
+        ) {
+          skipped++;
+          continue;
+        }
+
+        // Cases without usable SI/BL should remain
+        // genuine NEEDS_REVIEW cases.
+        if (
+          !caseObj.siData ||
+          !caseObj.blData
+        ) {
+          skipped++;
+          continue;
+        }
+
+        checked++;
+
+        const verification =
+          verifyDocuments(
+            caseObj.siData,
+            caseObj.blData,
+            {
+              hasSi: true,
+              hasBl: true,
+            }
+          );
+
+        const changed =
+          caseObj
+            .verificationStatus !==
+            verification.status ||
+          caseObj.reviewReason !==
+            verification
+              .reviewReason ||
+          JSON.stringify(
+            caseObj.defectFields ??
+              []
+          ) !==
+            JSON.stringify(
+              verification
+                .defectFields
+            );
+
+        const updatedCase = {
+          ...caseObj,
+
+          verificationStatus:
+            verification.status,
+
+          hasDefect:
+            verification.hasDefect,
+
+          defectFields:
+            verification
+              .defectFields,
+
+          reviewReason:
+            verification
+              .reviewReason,
+
+          fieldComparisons:
+            verification
+              .fieldComparisons,
+
+          priorityScore:
+            verification.status ===
+            "NEEDS_REVIEW"
+              ? 95
+              : verification
+                    .status ===
+                  "MISMATCH"
+                ? 80
+                : 20,
+
+          priorityReasons: [
+            verification
+              .explanation,
+          ],
+        };
+
+        entry.case =
+          updatedCase;
+
+        entry.processedAt =
+          new Date()
+            .toISOString();
+
+        caseRepository.save(
+          updatedCase
+        );
+
+        if (changed) {
+          updated++;
+        }
+      }
+
+      // ------------------------------------------
+      // Persist corrected cache
+      // ------------------------------------------
+
+      await saveProcessedEmailCache();
+
+      // ------------------------------------------
+      // Count corrected results
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          caseObj?.category !==
+          "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        if (
+          caseObj.verificationStatus in
+          after
+        ) {
+          after[
+            caseObj.verificationStatus as
+              keyof typeof after
+          ]++;
+        }
+      }
+
+      return res.json({
+        success: true,
+
+        message:
+          "Cached SI/BL cases were reverified without Gemini.",
+
+        checked,
+        updated,
+        skipped,
+
+        before,
+        after,
+      });
+    } catch (
+      error: any
+    ) {
+      console.error(
+        "Cached reverification failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          error:
+            error?.message ||
+            "Cached reverification failed.",
+        });
+    }
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Gemini Copilot integration
 // ---------------------------------------------------------------------------
