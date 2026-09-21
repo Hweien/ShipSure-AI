@@ -13,14 +13,16 @@ import {
 import { SYNTHETIC_DEMO_CASES } from "./syntheticData";
 
 class DatasetService {
-  private mode: DataSourceMode = "DEMO";
+  private mode: DataSourceMode = "DOCKER";
   private localPath: string = "./data";
   private dockerUrl: string = "http://localhost:8080";
   private cases: ShipmentCase[] = [];
   private emails: EmailRecord[] = [];
 
   constructor() {
-    this.initDemoData();
+    if (this.mode === "DEMO") {
+      this.initDemoData();
+    }
   }
 
   private initDemoData() {
@@ -200,6 +202,36 @@ class DatasetService {
       return {
         message: `Connection failed to ${this.dockerUrl}: ${err.message}`
       };
+    }
+  }
+
+  public async loadFromBackend(): Promise<void> {
+    // DEMO mode: use synthetic frontend data
+    if (this.mode === "DEMO") {
+      this.initDemoData();
+      return;
+    }
+
+    // LOCAL / DOCKER mode:
+    // Load both raw inbox emails and processed shipment cases
+    const [emailResponse, caseResponse] = await Promise.all([
+      fetch("/api/dataset/emails"),
+      fetch("/api/cases")
+    ]);
+
+    if (!emailResponse.ok) {
+      throw new Error(
+        `Failed to load emails: HTTP ${emailResponse.status}`
+      );
+    }
+
+    this.emails = await emailResponse.json();
+
+    // Cases may still be empty before DS1/DS2 process the emails.
+    if (caseResponse.ok) {
+      this.cases = await caseResponse.json();
+    } else {
+      this.cases = [];
     }
   }
 }
