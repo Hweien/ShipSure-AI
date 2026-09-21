@@ -1,6 +1,14 @@
 /**
  * ShipSure AI - Deterministic Verification & Validation Engine
  * Implements strict compliance with SDOC Hackathon evaluation logic
+ *
+ * FIXES in this version:
+ *  1. container_count is normalized to a NUMBER (leading integer), so
+ *     "1 x 40'HC" vs "1 x 40'HC" no longer becomes NaN !== NaN (false MISMATCH).
+ *  2. shipper / consignee / notify_party use only the FIRST line of the value,
+ *     so address continuation lines no longer cause false MISMATCH.
+ *  3. Removed the bad `normalizeField` import (it is not exported from
+ *     ./normalization) and the unused variables that called it.
  */
 
 import {
@@ -13,12 +21,11 @@ import {
   VerificationStatus
 } from "../types";
 import {
-  normalizeField,
   normalizeEntityName,
   normalizePort,
-  normalizeContainerCount,
   normalizeGrossWeight,
 } from "./normalization";
+
 export interface VerificationResult {
   status: VerificationStatus;
   hasDefect: boolean;
@@ -47,8 +54,9 @@ export function normalizeFieldValue(
     case "shipper":
     case "consignee":
     case "notify_party":
+      // FIX 2: compare only the first line (name), ignore address lines.
       return normalizeEntityName(
-        String(raw)
+        String(raw).split(/\r?\n/)[0]
       ).normalized;
 
     case "port_of_loading":
@@ -57,10 +65,11 @@ export function normalizeFieldValue(
         String(raw)
       ).normalized;
 
-    case "container_count":
-      return normalizeContainerCount(
-        raw
-      ).normalized;
+    case "container_count": {
+      // FIX 1: return a real number (leading integer), e.g. "6 x 40'HC" -> 6
+      const match = String(raw).match(/\d+/);
+      return match ? Number(match[0]) : "";
+    }
 
     case "gross_weight_kg":
       return normalizeGrossWeight(
@@ -72,42 +81,23 @@ export function normalizeFieldValue(
 export function normalizeDocumentFields(
   document: ExtractedDocumentFields
 ): ExtractedDocumentFields {
-  for (
-    const field of
-    COMPARISON_FIELDS
-  ) {
-    const item =
-      document.fields[field];
+  for (const field of COMPARISON_FIELDS) {
+    const item = document.fields[field];
 
-    if (
-      item?.raw !== null &&
-      item?.raw !== undefined
-    ) {
-      item.normalized =
-        normalizeFieldValue(
-          field,
-          item.raw
-        );
+    if (item?.raw !== null && item?.raw !== undefined) {
+      item.normalized = normalizeFieldValue(field, item.raw);
     }
   }
 
   return document;
 }
 
-function isMissingValue(
-  raw: unknown
-): boolean {
-  if (
-    raw === null ||
-    raw === undefined
-  ) {
+function isMissingValue(raw: unknown): boolean {
+  if (raw === null || raw === undefined) {
     return true;
   }
 
-  const value =
-    String(raw)
-      .trim()
-      .toUpperCase();
+  const value = String(raw).trim().toUpperCase();
 
   if (!value) {
     return true;
@@ -181,19 +171,6 @@ export function verifyDocuments(
     const blField = bl.fields[field];
 
     const label = FIELD_LABELS[field];
-    const siRaw = String(siField?.raw ?? "").trim();
-    const blRaw = String(blField?.raw ?? "").trim();
-
-    const siNormalized = siRaw
-      ? normalizeField(field, siRaw)
-      : null;
-
-    const blNormalized = blRaw
-      ? normalizeField(field, blRaw)
-      : null;
-
-    const siMissing = !siRaw;
-    const blMissing = !blRaw;
 
     // Check if field was unreadable in either document
     if (
@@ -242,94 +219,44 @@ export function verifyDocuments(
         label,
 
         siEvidence:
-          siField &&
-          !isMissingValue(
-            siField.raw
-          )
+          siField && !isMissingValue(siField.raw)
             ? {
                 documentType: "SI",
-                originalValue:
-                  String(
-                    siField.raw
-                  ),
-
-                normalizedValue:
-                  normalizeFieldValue(
-                    field,
-                    siField.raw!
-                  ),
-
-                snippet:
-                  siField.snippet,
-
-                confidence:
-                  "MEDIUM",
+                originalValue: String(siField.raw),
+                normalizedValue: normalizeFieldValue(field, siField.raw!),
+                snippet: siField.snippet,
+                confidence: "MEDIUM",
               }
             : null,
 
         blEvidence:
-          blField &&
-          !isMissingValue(
-            blField.raw
-          )
+          blField && !isMissingValue(blField.raw)
             ? {
                 documentType: "BL",
-
-                originalValue:
-                  String(
-                    blField.raw
-                  ),
-
-                normalizedValue:
-                  normalizeFieldValue(
-                    field,
-                    blField.raw!
-                  ),
-
-                snippet:
-                  blField.snippet,
-
-                confidence:
-                  "MEDIUM",
+                originalValue: String(blField.raw),
+                normalizedValue: normalizeFieldValue(field, blField.raw!),
+                snippet: blField.snippet,
+                confidence: "MEDIUM",
               }
             : null,
 
-        status:
-          "NEEDS_REVIEW",
-
-        notes:
-          `Required value missing for ${label}`,
+        status: "NEEDS_REVIEW",
+        notes: `Required value missing for ${label}`,
       });
 
       continue;
     }
 
-    const normalizedSi =
-      normalizeFieldValue(
-        field,
-        siField.raw!
-      );
-
-    const normalizedBl =
-      normalizeFieldValue(
-        field,
-        blField.raw!
-      );
+    const normalizedSi = normalizeFieldValue(field, siField.raw!);
+    const normalizedBl = normalizeFieldValue(field, blField.raw!);
 
     // Perform Field-Specific Comparison
     let matchStatus: FieldMatchStatus = "MISMATCH";
     let notes = "";
 
     if (field === "container_count" || field === "gross_weight_kg") {
-      const numSi =
-        Number(
-          normalizedSi
-        );
-
-      const numBl =
-        Number(
-          normalizedBl
-        );
+      const numSi = Number(normalizedSi);
+      const numBl = Number(normalizedBl);
 
       if (numSi === numBl) {
         matchStatus =
@@ -351,15 +278,8 @@ export function verifyDocuments(
       // String / Entity / Port comparison
       const rawSi = String(siField.raw || "").trim();
       const rawBl = String(blField.raw || "").trim();
-      const normSi =
-        String(
-          normalizedSi
-        ).trim();
-
-      const normBl =
-        String(
-          normalizedBl
-        ).trim();
+      const normSi = String(normalizedSi).trim();
+      const normBl = String(normalizedBl).trim();
 
       if (rawSi.toUpperCase() === rawBl.toUpperCase()) {
         matchStatus = "EXACT_MATCH";
@@ -430,7 +350,7 @@ export function verifyDocuments(
       reviewReason: null,
       fieldComparisons,
       confidenceScore: 98,
-      explanation: `${defectFields.length} discrepancy${defectFields.length > 1 ? "ies" : ""} detected: ${defectFields.map(f => FIELD_LABELS[f]).join(", ")}.`
+      explanation: `${defectFields.length} discrepanc${defectFields.length > 1 ? "ies" : "y"} detected: ${defectFields.map(f => FIELD_LABELS[f]).join(", ")}.`
     };
   }
 
