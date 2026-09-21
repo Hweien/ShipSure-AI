@@ -142,7 +142,71 @@ export async function processEmailPipeline(
           }
         )
       )
-    );
+        );
+    
+    const unreadableDocument =
+        attachmentContents.find(
+            (doc: any) =>
+            doc.unreadable === true
+        );
+
+        if (unreadableDocument) {
+        console.warn(
+            `[Pipeline ${email.email_id}] Unreadable document detected: ${unreadableDocument.path}`
+        );
+
+        return {
+            ...baseCase,
+
+            verificationStatus:
+            "NEEDS_REVIEW",
+
+            hasDefect: false,
+
+            defectFields: [],
+
+            reviewReason:
+            "unreadable",
+
+            priorityScore: 95,
+
+            priorityReasons: [
+            `Unreadable document: ${unreadableDocument.path}`,
+            ],
+
+            timeline: [
+            ...baseCase.timeline,
+            {
+                id:
+                `EV-${email.email_id}-UNREADABLE`,
+
+                timestamp:
+                new Date().toISOString(),
+
+                agent:
+                "Document Agent",
+
+                action:
+                "Document Reading",
+
+                summary:
+                `Document could not be reliably read: ${unreadableDocument.path}`,
+
+                status:
+                "warning",
+
+                details: {
+                path:
+                    unreadableDocument.path,
+
+                readError:
+                    unreadableDocument.readError ||
+                    "unreadable_document",
+                },
+            },
+            ],
+        };
+        }
 
     console.log(
     `[Pipeline ${email.email_id}] 3. Identifying SI/BL`

@@ -1,366 +1,819 @@
-import React, { useState, useEffect } from "react";
-import { 
-  UserCheck, 
-  AlertCircle, 
-  CheckCircle2, 
-  FileText, 
-  HelpCircle, 
-  ExternalLink, 
-  ArrowRight, 
-  ShieldCheck, 
-  X, 
+import React, {
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
+import {
+  AlertCircle,
   Camera,
-  GitCompare
+  CheckCircle2,
+  FileText,
+  ShieldCheck,
+  UserCheck,
+  X,
 } from "lucide-react";
-import { ShipmentCase, ComparisonField } from "../types";
-import { datasetProvider } from "../services/datasetProvider";
+
+import {
+  COMPARISON_FIELDS,
+  ComparisonField,
+  ShipmentCase,
+} from "../types";
+
+import {
+  submitHumanReview,
+} from "../services/humanReviewClient";
 
 interface HumanReviewViewProps {
   cases: ShipmentCase[];
-  onOpenCase: (caseId: string) => void;
-  onRefreshCases: () => void;
-  onOpenVisionOcr?: (caseId: string) => void;
-  initialCaseId?: string | null; 
+
+  onOpenCase:
+    (caseId: string) => void;
+
+  onRefreshCases:
+    () =>
+      | void
+      | Promise<void>;
+
+  onOpenVisionOcr?:
+    (caseId: string) => void;
+
+  initialCaseId?:
+    string | null;
 }
 
-export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
-  cases,
-  onOpenCase,
-  onRefreshCases,
-  onOpenVisionOcr,
-  initialCaseId
-}) => {
-  // Modal starts closed (null). It only opens when clicking "Review & Decide".
-  const [selectedCase, setSelectedCase] = useState<ShipmentCase | null>(null);
-
-  const [overrideValue, setOverrideValue] = useState("");
-  const [overrideField, setOverrideField] = useState<string>("consignee");
-  const [decisionNotes, setDecisionNotes] = useState("");
-  const [reviewerName, setReviewerName] = useState("Sarah Tan (Senior Doc Specialist)");
-
-  // Dynamically set the correct target field and pre-fill values when a modal is opened
-  useEffect(() => {
-    if (selectedCase) {
-      if (selectedCase.hasRevision && selectedCase.revisionComparison?.unexpectedChanges?.length) {
-        const unexpected = selectedCase.revisionComparison.unexpectedChanges[0];
-        setOverrideField(unexpected.field);
-        setOverrideValue(String(unexpected.siValue));
-        setDecisionNotes(`Revision audit: Consignee modified unilaterally in BL V2. Reverting to intended SI value '${unexpected.siValue}'.`);
-      } else if (selectedCase.reviewReason === "unreadable") {
-        setOverrideField("gross_weight_kg");
-        setOverrideValue("64,000 KG");
-        setDecisionNotes("Optical scan verification: Digit 2 confirmed as 64,000 KG per SI reference.");
-      } else if (selectedCase.reviewReason === "missing_value") {
-        setOverrideField("consignee");
-        setOverrideValue("");
-        setDecisionNotes("Shipper preliminary SI omitted Consignee. Verified via customer booking profile.");
-      } else if (selectedCase.defectFields && selectedCase.defectFields.length > 0) {
-        setOverrideField(selectedCase.defectFields[0]);
-        setOverrideValue("");
-      } else {
-        setOverrideField("consignee");
-      }
-    }
-  }, [selectedCase]);
-
-  const pendingReviewCases = cases.filter(
-    (c) => c.verificationStatus === "NEEDS_REVIEW" || (c.hasRevision && c.revisionComparison?.overallOutcome === "NEEDS_HUMAN_REVIEW")
-  );
-
-  const handleApplyDecision = (approvedStatus: "OK" | "MISMATCH") => {
-    if (!selectedCase) return;
-
-    datasetProvider.updateHumanReview(selectedCase.id, {
-      reviewer: reviewerName,
-      approvedStatus,
-      comments: decisionNotes || `Resolved as ${approvedStatus} by operator`,
-      manualOverrides: overrideValue ? { [overrideField]: overrideValue } : undefined
-    });
-
-    onRefreshCases();
-    setSelectedCase(null);
-    setOverrideValue("");
-    setDecisionNotes("");
+const FIELD_LABELS:
+  Record<
+    ComparisonField,
+    string
+  > = {
+    shipper: "Shipper",
+    consignee: "Consignee",
+    notify_party:
+      "Notify Party",
+    port_of_loading:
+      "Port of Loading",
+    port_of_discharge:
+      "Port of Discharge",
+    container_count:
+      "Container Count",
+    gross_weight_kg:
+      "Gross Weight (KG)",
   };
 
-  return (
-    <div id="human-review-view" className="p-6 space-y-6 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-            <UserCheck className="w-5 h-5 text-amber-600" />
-            Human-in-the-Loop Review Queue
-          </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Zero-Guess Guarantee: When source documents are unreadable, missing fields, or uncertain, cases escalate here.
-          </p>
-        </div>
+function reviewReasonText(
+  reason:
+    ShipmentCase["reviewReason"]
+) {
+  switch (reason) {
+    case "missing_attachment":
+      return "A required SI or BL attachment is missing.";
 
-        <div className="flex items-center gap-2">
+    case "unreadable":
+      return "One or more required fields could not be read reliably.";
+
+    case "missing_value":
+      return "A required shipment value is missing.";
+
+    case "wrong_doc_type":
+      return "The expected SI/BL document pair could not be identified.";
+
+    default:
+      return "The case requires human verification.";
+  }
+}
+
+export const HumanReviewView:
+  React.FC<
+    HumanReviewViewProps
+  > = ({
+    cases,
+    onOpenCase,
+    onRefreshCases,
+    onOpenVisionOcr,
+    initialCaseId,
+  }) => {
+    const [
+      selectedCase,
+      setSelectedCase,
+    ] =
+      useState<
+        ShipmentCase | null
+      >(null);
+
+    const [
+      overrideField,
+      setOverrideField,
+    ] =
+      useState<ComparisonField>(
+        "consignee"
+      );
+
+    const [
+      overrideDocument,
+      setOverrideDocument,
+    ] =
+      useState<
+        "SI" | "BL"
+      >("BL");
+
+    const [
+      overrideValue,
+      setOverrideValue,
+    ] = useState("");
+
+    const [
+      reviewerName,
+      setReviewerName,
+    ] =
+      useState(
+        "Human Reviewer"
+      );
+
+    const [
+      decisionNotes,
+      setDecisionNotes,
+    ] = useState("");
+
+    const [
+      submitting,
+      setSubmitting,
+    ] =
+      useState(false);
+
+    const [
+      error,
+      setError,
+    ] =
+      useState<
+        string | null
+      >(null);
+
+    const pendingReviewCases =
+      useMemo(
+        () =>
+          cases.filter(
+            (item) =>
+              item
+                .verificationStatus ===
+                "NEEDS_REVIEW" ||
+              (
+                item.hasRevision &&
+                item
+                  .revisionComparison
+                  ?.overallOutcome ===
+                  "NEEDS_HUMAN_REVIEW"
+              )
+          ),
+        [cases]
+      );
+
+    // ----------------------------------
+    // Open requested case
+    // ----------------------------------
+
+    useEffect(() => {
+      if (!initialCaseId) {
+        return;
+      }
+
+      const match =
+        pendingReviewCases.find(
+          (item) =>
+            item.id ===
+            initialCaseId
+        );
+
+      if (match) {
+        setSelectedCase(
+          match
+        );
+      }
+    }, [
+      initialCaseId,
+      pendingReviewCases,
+    ]);
+
+    // ----------------------------------
+    // Select the first field that
+    // actually requires review.
+    //
+    // No fake pre-filled value.
+    // ----------------------------------
+
+    useEffect(() => {
+      if (!selectedCase) {
+        return;
+      }
+
+      const reviewField =
+        selectedCase
+          .fieldComparisons
+          ?.find(
+            (comparison) =>
+              comparison.status ===
+              "NEEDS_REVIEW"
+          );
+
+      const defectField =
+        selectedCase
+          .defectFields
+          ?.[0];
+
+      const field =
+        reviewField?.field ??
+        defectField ??
+        "consignee";
+
+      setOverrideField(
+        field
+      );
+
+      if (
+        reviewField &&
+        !reviewField.siEvidence
+      ) {
+        setOverrideDocument(
+          "SI"
+        );
+      } else if (
+        reviewField &&
+        !reviewField.blEvidence
+      ) {
+        setOverrideDocument(
+          "BL"
+        );
+      } else {
+        setOverrideDocument(
+          "BL"
+        );
+      }
+
+      setOverrideValue("");
+      setDecisionNotes("");
+      setError(null);
+    }, [selectedCase]);
+
+    const activeComparison =
+      selectedCase
+        ?.fieldComparisons
+        ?.find(
+          (comparison) =>
+            comparison.field ===
+            overrideField
+        );
+
+    async function applyDecision(
+      approvedStatus:
+        | "OK"
+        | "MISMATCH"
+    ) {
+      if (!selectedCase) {
+        return;
+      }
+
+      if (
+        !reviewerName.trim()
+      ) {
+        setError(
+          "Reviewer name is required."
+        );
+
+        return;
+      }
+
+      try {
+        setSubmitting(true);
+        setError(null);
+
+        await submitHumanReview(
+          selectedCase.id,
+          {
+            reviewer:
+              reviewerName.trim(),
+
+            approvedStatus,
+
+            comments:
+              decisionNotes.trim() ||
+              undefined,
+
+            manualOverride:
+              overrideValue.trim()
+                ? {
+                    field:
+                      overrideField,
+
+                    documentType:
+                      overrideDocument,
+
+                    value:
+                      overrideValue.trim(),
+                  }
+                : undefined,
+          }
+        );
+
+        await onRefreshCases();
+
+        setSelectedCase(
+          null
+        );
+
+        setOverrideValue("");
+        setDecisionNotes("");
+      } catch (err: any) {
+        setError(
+          err?.message ||
+            "Unable to save human review."
+        );
+      } finally {
+        setSubmitting(
+          false
+        );
+      }
+    }
+
+    return (
+      <div
+        id="human-review-view"
+        className="p-6 space-y-6 max-w-7xl mx-auto"
+      >
+        {/* Header */}
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+
+              <UserCheck className="w-5 h-5 text-amber-600" />
+
+              Human-in-the-Loop
+              Review Queue
+            </h1>
+
+            <p className="text-xs text-slate-500 mt-0.5">
+              Cases that cannot
+              safely be resolved
+              automatically are
+              escalated for a
+              recorded human
+              decision.
+            </p>
+          </div>
+
           <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
-            {pendingReviewCases.length} Cases Awaiting Operator Decision
+
+            {
+              pendingReviewCases.length
+            }{" "}
+            Awaiting Review
           </span>
         </div>
-      </div>
 
-      {/* Main Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {pendingReviewCases.map((c) => {
-          const reasonLabel = c.reviewReason
-            ? c.reviewReason.replace(/_/g, " ").toUpperCase()
-            : "UNEXPECTED MODIFICATION";
+        {/* Queue */}
 
-          return (
-            <div
-              key={c.id}
-              className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs flex flex-col justify-between hover:border-amber-400 transition"
-            >
-              <div>
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
-                    {reasonLabel}
-                  </span>
-                  <span className="text-xs font-bold text-slate-700">Priority {c.priorityScore}</span>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+
+          {pendingReviewCases.map(
+            (item) => (
+              <div
+                key={
+                  item.id
+                }
+                className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs flex flex-col justify-between hover:border-amber-400 transition"
+              >
+                <div>
+
+                  <div className="flex items-start justify-between gap-2 mb-2">
+
+                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+
+                      {(
+                        item.reviewReason ??
+                        "revision_review"
+                      )
+                        .replace(
+                          /_/g,
+                          " "
+                        )
+                        .toUpperCase()}
+                    </span>
+
+                    <span className="text-xs font-bold text-slate-700">
+                      Priority{" "}
+                      {
+                        item.priorityScore
+                      }
+                    </span>
+                  </div>
+
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {
+                      item.shipmentReference
+                    }
+                  </h3>
+
+                  <p className="text-xs text-slate-500 mt-0.5 truncate">
+                    {
+                      item.emailSubject
+                    }
+                  </p>
+
+                  <div className="mt-3 bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs">
+
+                    <div className="font-semibold text-slate-700 mb-1">
+                      Review reason
+                    </div>
+
+                    <p className="text-slate-600">
+                      {reviewReasonText(
+                        item.reviewReason
+                      )}
+                    </p>
+                  </div>
                 </div>
 
-                <h3 className="text-sm font-bold text-slate-900">{c.shipmentReference}</h3>
-                <p className="text-xs text-slate-500 mt-0.5 truncate">{c.emailSubject}</p>
+                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
 
-                <div className="mt-3 bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs space-y-1.5">
-                  <div className="font-semibold text-slate-700">AI Validation Reason:</div>
-                  <p className="text-slate-600 leading-snug">
-                    {c.reviewReason === "missing_attachment" && "Shipping Instruction (SI) attachment was missing from carrier email."}
-                    {c.reviewReason === "unreadable" && "Optical scan smudge on Gross Weight. Ambiguity between 64,000 KG (58%) and 68,000 KG (42%)."}
-                    {c.reviewReason === "missing_value" && "Mandatory consignee field was left blank in shipper's preliminary document."}
-                    {!c.reviewReason && "Carrier altered Consignee legal name during BL V2 re-issue."}
+                  <button
+                    onClick={() =>
+                      onOpenCase(
+                        item.id
+                      )
+                    }
+                    className="text-xs text-slate-600 hover:text-slate-900 font-medium underline cursor-pointer"
+                  >
+                    Inspect Case
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      setSelectedCase(
+                        item
+                      )
+                    }
+                    className="text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold px-3 py-1.5 rounded-lg transition cursor-pointer"
+                  >
+                    Review & Decide
+                  </button>
+                </div>
+              </div>
+            )
+          )}
+
+          {pendingReviewCases.length ===
+            0 && (
+            <div className="col-span-3 text-center py-12 bg-white rounded-xl border border-slate-200 p-8">
+
+              <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+
+              <h3 className="text-sm font-bold text-slate-900">
+                Review Queue Clear
+              </h3>
+
+              <p className="text-xs text-slate-500 mt-1">
+                No case currently
+                requires human
+                review.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Review modal */}
+
+        {selectedCase && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+
+            <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full p-6 space-y-4 border border-slate-200 max-h-[90vh] overflow-y-auto">
+
+              <div className="flex items-start justify-between border-b border-slate-200 pb-3">
+
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+
+                    <UserCheck className="w-4 h-4 text-amber-600" />
+
+                    Human Review:{" "}
+                    {
+                      selectedCase
+                        .shipmentReference
+                    }
+                  </h3>
+
+                  <p className="text-xs text-slate-500 mt-1">
+                    Review source
+                    evidence before
+                    approving the
+                    final decision.
                   </p>
                 </div>
+
+                <button
+                  onClick={() =>
+                    setSelectedCase(
+                      null
+                    )
+                  }
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
 
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                <button
-                  onClick={() => onOpenCase(c.id)}
-                  className="text-xs text-slate-600 hover:text-slate-900 font-medium underline cursor-pointer"
+              {/* Reason */}
+
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+
+                <div className="flex gap-2">
+
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+
+                  <div>
+                    <div className="text-xs font-bold text-amber-900">
+                      Why this case
+                      needs review
+                    </div>
+
+                    <div className="text-[11px] text-amber-800 mt-1">
+                      {reviewReasonText(
+                        selectedCase
+                          .reviewReason
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actual evidence */}
+
+              <div className="space-y-2">
+
+                <div className="text-xs font-bold text-slate-800">
+                  Field Evidence
+                </div>
+
+                <select
+                  value={
+                    overrideField
+                  }
+                  onChange={(e) =>
+                    setOverrideField(
+                      e.target
+                        .value as ComparisonField
+                    )
+                  }
+                  className="w-full text-xs border border-slate-300 rounded-lg px-3 py-2"
                 >
-                  Inspect Case
-                </button>
+                  {COMPARISON_FIELDS.map(
+                    (field) => (
+                      <option
+                        key={
+                          field
+                        }
+                        value={
+                          field
+                        }
+                      >
+                        {
+                          FIELD_LABELS[
+                            field
+                          ]
+                        }
+                      </option>
+                    )
+                  )}
+                </select>
+
+                <div className="grid grid-cols-2 gap-2">
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+
+                    <div className="text-[10px] font-bold text-slate-500 uppercase">
+                      SI
+                    </div>
+
+                    <div className="text-xs font-mono text-slate-800 mt-1 break-words">
+                      {
+                        activeComparison
+                          ?.siEvidence
+                          ?.originalValue ??
+                        "No readable value"
+                      }
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+
+                    <div className="text-[10px] font-bold text-slate-500 uppercase">
+                      BL
+                    </div>
+
+                    <div className="text-xs font-mono text-slate-800 mt-1 break-words">
+                      {
+                        activeComparison
+                          ?.blEvidence
+                          ?.originalValue ??
+                        "No readable value"
+                      }
+                    </div>
+                  </div>
+                </div>
+
                 <button
-                  onClick={() => setSelectedCase(c)}
-                  className="text-xs bg-amber-600 hover:bg-amber-700 text-white font-semibold px-3 py-1.5 rounded-lg transition cursor-pointer"
+                  onClick={() =>
+                    onOpenCase(
+                      selectedCase.id
+                    )
+                  }
+                  className="text-xs text-blue-600 hover:underline flex items-center gap-1"
                 >
-                  Review & Decide
+                  <FileText className="w-3.5 h-3.5" />
+
+                  Open full SI vs BL
                 </button>
+
+                {onOpenVisionOcr &&
+                  selectedCase.reviewReason ===
+                    "unreadable" && (
+                    <button
+                      onClick={() =>
+                        onOpenVisionOcr(
+                          selectedCase.id
+                        )
+                      }
+                      className="text-xs text-indigo-600 hover:underline flex items-center gap-1"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+
+                      Open Vision OCR
+                    </button>
+                  )}
+              </div>
+
+              {/* Optional manual correction */}
+
+              <div className="border-t border-slate-200 pt-4 space-y-3">
+
+                <div>
+                  <div className="text-xs font-bold text-slate-800">
+                    Optional Manual
+                    Correction
+                  </div>
+
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    Only enter a
+                    value if you
+                    verified it from
+                    the source
+                    document.
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOverrideDocument(
+                        "SI"
+                      )
+                    }
+                    className={`text-xs p-2 rounded border ${
+                      overrideDocument ===
+                      "SI"
+                        ? "border-blue-500 bg-blue-50 text-blue-700"
+                        : "border-slate-200"
+                    }`}
+                  >
+                    Correct SI
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOverrideDocument(
+                        "BL"
+                      )
+                    }
+                    className={`text-xs p-2 rounded border ${
+                      overrideDocument ===
+                      "BL"
+                        ? "border-blue-500 bg-blue-50 text-blue-700"
+                        : "border-slate-200"
+                    }`}
+                  >
+                    Correct BL
+                  </button>
+                </div>
+
+                <input
+                  value={
+                    overrideValue
+                  }
+                  onChange={(e) =>
+                    setOverrideValue(
+                      e.target.value
+                    )
+                  }
+                  placeholder={`Verified ${FIELD_LABELS[overrideField]} value`}
+                  className="w-full text-xs border border-slate-300 rounded-lg px-3 py-2"
+                />
+              </div>
+
+              {/* Reviewer */}
+
+              <div className="space-y-2">
+
+                <label className="text-xs font-semibold text-slate-700">
+                  Reviewer
+                </label>
+
+                <input
+                  value={
+                    reviewerName
+                  }
+                  onChange={(e) =>
+                    setReviewerName(
+                      e.target.value
+                    )
+                  }
+                  className="w-full text-xs border border-slate-300 rounded-lg px-3 py-2"
+                />
+
+                <label className="text-xs font-semibold text-slate-700">
+                  Decision Notes
+                </label>
+
+                <textarea
+                  value={
+                    decisionNotes
+                  }
+                  onChange={(e) =>
+                    setDecisionNotes(
+                      e.target.value
+                    )
+                  }
+                  rows={3}
+                  placeholder="State what evidence was reviewed and why this decision is appropriate."
+                  className="w-full text-xs border border-slate-300 rounded-lg px-3 py-2 resize-none"
+                />
+              </div>
+
+              {error && (
+                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2">
+                  {error}
+                </div>
+              )}
+
+              {/* Decision */}
+
+              <div className="border-t border-slate-200 pt-4">
+
+                <div className="flex items-center gap-2 mb-3 text-[11px] text-slate-500">
+
+                  <ShieldCheck className="w-4 h-4 text-blue-600" />
+
+                  Decision will be
+                  persisted to the
+                  case audit record.
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+
+                  <button
+                    disabled={
+                      submitting
+                    }
+                    onClick={() =>
+                      void applyDecision(
+                        "OK"
+                      )
+                    }
+                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold py-2.5 rounded-lg"
+                  >
+                    Approve as OK
+                  </button>
+
+                  <button
+                    disabled={
+                      submitting
+                    }
+                    onClick={() =>
+                      void applyDecision(
+                        "MISMATCH"
+                      )
+                    }
+                    className="bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold py-2.5 rounded-lg"
+                  >
+                    Confirm Mismatch
+                  </button>
+                </div>
               </div>
             </div>
-          );
-        })}
-
-        {pendingReviewCases.length === 0 && (
-          <div className="col-span-3 text-center py-12 bg-white rounded-xl border border-slate-200 p-8">
-            <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
-            <h3 className="text-sm font-bold text-slate-900">Review Queue Clear!</h3>
-            <p className="text-xs text-slate-500 mt-1">All incoming shipments have either verified clean or have confirmed carrier discrepancies.</p>
           </div>
         )}
       </div>
-
-      {/* Review Decision Action Modal */}
-      {selectedCase && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in">
-          <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full p-6 space-y-4 border border-slate-200">
-            <div className="flex items-start justify-between border-b border-slate-200 pb-3">
-              <div>
-                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <UserCheck className="w-4 h-4 text-amber-600" />
-                  Human Decision Override: {selectedCase.shipmentReference}
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Your decision is permanently appended to the immutable case audit passport.
-                </p>
-              </div>
-              <button
-                onClick={() => setSelectedCase(null)}
-                className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* 1. Revision Case Context Card (for SHP-7612) */}
-            {selectedCase.hasRevision && (selectedCase.revisionComparison?.unexpectedChanges?.length ?? 0) > 0 && (
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-xs space-y-2">
-                <div className="font-bold text-purple-950 flex items-center gap-1.5">
-                  <GitCompare className="w-3.5 h-3.5 text-purple-600" />
-                  <span>3-Way Revision Finding: Unauthorized Consignee Alteration</span>
-                </div>
-                <p className="text-[11px] text-purple-800">
-                  Carrier fixed weight and container count, but altered the Consignee company name on BL V2. Choose the authorized value:
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const val = String(selectedCase.revisionComparison?.unexpectedChanges[0]?.siValue);
-                      setOverrideField("consignee");
-                      setOverrideValue(val);
-                      setDecisionNotes(`Authorized original SI Consignee: ${val}`);
-                    }}
-                    className={`p-2.5 bg-white rounded-lg border text-left transition cursor-pointer ${
-                      overrideValue === String(selectedCase.revisionComparison?.unexpectedChanges[0]?.siValue)
-                        ? "border-purple-600 ring-2 ring-purple-100 shadow-xs"
-                        : "border-purple-200 hover:bg-purple-100/50"
-                    }`}
-                  >
-                    <div className="font-bold text-slate-900 text-xs">Original SI (Customer Intended)</div>
-                    <div className="font-mono text-[11px] text-purple-900 mt-0.5 truncate">
-                      {String(selectedCase.revisionComparison?.unexpectedChanges[0]?.siValue)}
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const val = String(selectedCase.revisionComparison?.unexpectedChanges[0]?.v2Value);
-                      setOverrideField("consignee");
-                      setOverrideValue(val);
-                      setDecisionNotes(`Approved carrier amended Consignee: ${val}`);
-                    }}
-                    className={`p-2.5 bg-white rounded-lg border text-left transition cursor-pointer ${
-                      overrideValue === String(selectedCase.revisionComparison?.unexpectedChanges[0]?.v2Value)
-                        ? "border-purple-600 ring-2 ring-purple-100 shadow-xs"
-                        : "border-purple-200 hover:bg-purple-100/50"
-                    }`}
-                  >
-                    <div className="font-bold text-slate-900 text-xs">Carrier BL V2 (Revised Draft)</div>
-                    <div className="font-mono text-[11px] text-purple-900 mt-0.5 truncate">
-                      {String(selectedCase.revisionComparison?.unexpectedChanges[0]?.v2Value)}
-                    </div>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* 2. Optical Scan Smudge Proposals (for SHP-8411) */}
-            {selectedCase.reviewReason === "unreadable" && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="font-bold text-amber-900">AI Optical Model Proposals:</div>
-                  {onOpenVisionOcr && (
-                    <button
-                      onClick={() => onOpenVisionOcr(selectedCase.id)}
-                      className="flex items-center gap-1 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 bg-white px-2 py-0.5 rounded border border-indigo-200 shadow-2xs cursor-pointer"
-                    >
-                      <Camera className="w-3 h-3 text-indigo-600" />
-                      <span>Launch AI Vision OCR Reader</span>
-                    </button>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setOverrideField("gross_weight_kg");
-                      setOverrideValue("64,000 KG");
-                      setDecisionNotes("Optical smudge resolved: 64,000 KG confirmed per SI reference.");
-                    }}
-                    className={`p-2 bg-white border rounded text-left transition cursor-pointer ${
-                      overrideValue === "64,000 KG" ? "border-amber-500 ring-2 ring-amber-100" : "border-amber-300 hover:bg-amber-100/50"
-                    }`}
-                  >
-                    <div className="font-bold text-slate-900">Candidate A: 64,000 KG</div>
-                    <div className="text-[10px] text-slate-500">Confidence: 58% (Matches SI)</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setOverrideField("gross_weight_kg");
-                      setOverrideValue("68,000 KG");
-                      setDecisionNotes("Optical smudge resolved: 68,000 KG confirmed (discrepancy).");
-                    }}
-                    className={`p-2 bg-white border rounded text-left transition cursor-pointer ${
-                      overrideValue === "68,000 KG" ? "border-amber-500 ring-2 ring-amber-100" : "border-amber-300 hover:bg-amber-100/50"
-                    }`}
-                  >
-                    <div className="font-bold text-slate-900">Candidate B: 68,000 KG</div>
-                    <div className="text-[10px] text-slate-500">Confidence: 42% (Discrepancy)</div>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Operator Form Inputs */}
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Operator Name & Role</label>
-                <input
-                  type="text"
-                  value={reviewerName}
-                  onChange={(e) => setReviewerName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 font-medium"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="font-semibold text-slate-700">
-                    Confirmed Field Value Override
-                  </label>
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    Target Field: <strong className="text-blue-700">{overrideField}</strong>
-                  </span>
-                </div>
-                <input
-                  type="text"
-                  value={overrideValue}
-                  onChange={(e) => setOverrideValue(e.target.value)}
-                  placeholder="e.g. 64,000 KG or PACIFIC INDUSTRIAL TRADING LTD"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 font-medium font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Reasoning / Verification Notes</label>
-                <textarea
-                  rows={3}
-                  value={decisionNotes}
-                  onChange={(e) => setDecisionNotes(e.target.value)}
-                  placeholder="Explain optical verification evidence, telephone confirmation, or authorization basis..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-800 font-sans leading-relaxed"
-                />
-              </div>
-            </div>
-
-            {/* Footer Action Buttons */}
-            <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-              <button
-                type="button"
-                onClick={() => setSelectedCase(null)}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium px-4 py-2 rounded-lg transition cursor-pointer"
-              >
-                Cancel
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleApplyDecision("MISMATCH")}
-                  className="bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition cursor-pointer"
-                >
-                  Confirm Mismatch & Request Amendment
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleApplyDecision("OK")}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition cursor-pointer"
-                >
-                  Approve as Matching (Clear Release)
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+    );
+  };
