@@ -28,6 +28,7 @@ import {
 import type {
   ComparisonField,
   ExtractedDocumentFields,
+  COMPARISON_FIELDS
 } from "./src/types";
 import { compareDocuments } from "./src/services/comparison/comparisonService";
 
@@ -1057,6 +1058,7 @@ app.get("/api/dataset/emails", async (_req, res) => {
     });
   }
 });
+
 // DS2 - Compare SI and BL
 app.post("/api/ds2/compare", async (req, res) => {
   try {
@@ -1171,6 +1173,378 @@ app.post("/api/cases", (req, res) => {
   const saved = caseRepository.save(shipmentCase);
   return res.status(201).json(saved);
 });
+
+// ---------------------------------------------------------------------------
+// Human-in-the-Loop Review
+// Persist human decision, optional manual correction, and audit information.
+// ---------------------------------------------------------------------------
+app.post(
+  "/api/cases/:caseId/review",
+  async (req, res) => {
+    try {
+      const { caseId } = req.params;
+
+      const {
+        reviewer,
+        approvedStatus,
+        comments,
+        manualOverride,
+      } = req.body || {};
+
+      // ---------------------------------------------------------------------
+      // Validate reviewer
+      // ---------------------------------------------------------------------
+      if (
+        typeof reviewer !== "string" ||
+        !reviewer.trim()
+      ) {
+        return res.status(400).json({
+          error: "Reviewer name is required.",
+        });
+      }
+
+      // ---------------------------------------------------------------------
+      // Validate decision
+      // ---------------------------------------------------------------------
+      if (
+        approvedStatus !== "OK" &&
+        approvedStatus !== "MISMATCH"
+      ) {
+        return res.status(400).json({
+          error:
+            "approvedStatus must be OK or MISMATCH.",
+        });
+      }
+
+      // ---------------------------------------------------------------------
+      // Find case
+      // ---------------------------------------------------------------------
+      const shipmentCase =
+        caseRepository.getById(caseId);
+
+      if (!shipmentCase) {
+        return res.status(404).json({
+          error: "Case not found.",
+        });
+      }
+
+      const timestamp =
+        new Date().toISOString();
+
+      // ---------------------------------------------------------------------
+      // Optional manual override
+      // ---------------------------------------------------------------------
+      let manualOverrides:
+        | Partial<Record<string, any>>
+        | undefined;
+
+      if (manualOverride) {
+        const {
+          field,
+          documentType,
+          value,
+        } = manualOverride;
+
+        // Validate field
+        if (
+          typeof field !== "string" ||
+          !shipmentCase.fieldComparisons.some(
+            (item) => item.field === field
+          )
+        ) {
+          return res.status(400).json({
+            error:
+              `Invalid comparison field: ${field}`,
+          });
+        }
+
+        // Validate document type
+        if (
+          documentType !== "SI" &&
+          documentType !== "BL"
+        ) {
+          return res.status(400).json({
+            error:
+              "documentType must be SI or BL.",
+          });
+        }
+
+        // Validate value
+        if (
+          typeof value !== "string" ||
+          !value.trim()
+        ) {
+          return res.status(400).json({
+            error:
+              "Manual override value is required.",
+          });
+        }
+
+        const comparison =
+        shipmentCase.fieldComparisons.find(
+          (item) => item.field === field
+        );
+
+        if (!comparison) {
+          return res.status(400).json({
+            error:
+              `Comparison field not found: ${field}`,
+          });
+        }
+
+        const correctedValue =
+          value.trim();
+
+        // ---------------------------------------------------------------
+        // Preserve the existing evidence structure.
+        // If evidence already exists, update its value.
+        // ---------------------------------------------------------------
+        const existingEvidence =
+          documentType === "SI"
+            ? comparison.siEvidence
+            : comparison.blEvidence;
+
+        if (existingEvidence) {
+          const updatedEvidence = {
+            ...existingEvidence,
+            originalValue:
+              correctedValue,
+            normalizedValue:
+              correctedValue,
+            confidence:
+              "HIGH" as const,
+          };
+
+          if (documentType === "SI") {
+            comparison.siEvidence =
+              updatedEvidence;
+          } else {
+            comparison.blEvidence =
+              updatedEvidence;
+          }
+        } else {
+          // -------------------------------------------------------------
+          // If no evidence existed, create a valid FieldEvidence object.
+          // -------------------------------------------------------------
+          const newEvidence = {
+            documentType,
+            originalValue:
+              correctedValue,
+            normalizedValue:
+              correctedValue,
+            confidence:
+              "HIGH" as const,
+          };
+
+          if (documentType === "SI") {
+            comparison.siEvidence =
+              newEvidence;
+          } else {
+            comparison.blEvidence =
+              newEvidence;
+          }
+        }
+
+        // Store the override in the case's human-review decision.
+        manualOverrides = {
+          [field as ComparisonField]:
+            correctedValue,
+        };
+      }
+
+      // ---------------------------------------------------------------------
+      // Persist final human decision
+      // ---------------------------------------------------------------------
+      shipmentCase.verificationStatus =
+        approvedStatus;
+
+      // Human decision must survive maintenance/reverification.
+      shipmentCase.humanReviewed = true;
+
+      // Case is no longer waiting for human review.
+      shipmentCase.reviewReason = null;
+
+      // ---------------------------------------------------------------------
+      // Resolve revision review if this case came from a revision.
+      // ---------------------------------------------------------------------
+      if (
+        shipmentCase.revisionComparison
+      ) {
+        shipmentCase.revisionComparison
+          .overallOutcome =
+          "RESOLVED";
+      }
+
+      // ---------------------------------------------------------------------
+      // Store human review decision using the existing ShipmentCase type.
+      // ---------------------------------------------------------------------
+      shipmentCase.humanReviewDecision = {
+        reviewer:
+          reviewer.trim(),
+
+        timestamp,
+
+        approvedStatus,
+
+        manualOverrides,
+
+        comments:
+          typeof comments === "string" &&
+          comments.trim()
+            ? comments.trim()
+            : undefined,
+      };
+
+      // ---------------------------------------------------------------------
+      // Add timeline event
+      // ---------------------------------------------------------------------
+      shipmentCase.timeline.push({
+        id:
+          `human-review-${Date.now()}`,
+
+        timestamp,
+
+        agent:
+          "Human Reviewer",
+
+        action:
+          approvedStatus === "OK"
+            ? "Approved shipment as OK"
+            : "Confirmed shipment mismatch",
+
+        summary:
+          approvedStatus === "OK"
+            ? "Human reviewer approved the shipment as OK."
+            : "Human reviewer confirmed the shipment mismatch.",
+
+        status:
+          approvedStatus === "OK"
+            ? "success"
+            : "warning",
+
+        details: {
+          reviewer:
+            reviewer.trim(),
+
+          approvedStatus,
+
+          comments:
+            typeof comments === "string" &&
+            comments.trim()
+              ? comments.trim()
+              : undefined,
+
+          manualOverrides,
+        },
+      });
+
+      // ---------------------------------------------------------------------
+      // Save updated case
+      // ---------------------------------------------------------------------
+      caseRepository.save(
+        shipmentCase
+      );
+
+      // ---------------------------------------------------------------------
+      // Update persistent processed-email cache
+      // ---------------------------------------------------------------------
+      for (
+        const entry of Object.values(
+          processedEmailCache
+        )
+      ) {
+        if (
+          entry?.case?.id === caseId
+        ) {
+          entry.case =
+            shipmentCase;
+
+          entry.processedAt =
+            timestamp;
+        }
+      }
+
+      await saveProcessedEmailCache();
+
+      // ---------------------------------------------------------------------
+      // Append audit event
+      // ---------------------------------------------------------------------
+      await auditRepository.append([
+        {
+          caseId:
+            shipmentCase.id,
+
+          type:
+            "HUMAN_REVIEW",
+
+          timestamp,
+
+          reviewer:
+            reviewer.trim(),
+
+          approvedStatus,
+
+          comments:
+            typeof comments === "string" &&
+            comments.trim()
+              ? comments.trim()
+              : undefined,
+
+          manualOverride:
+            manualOverride
+              ? {
+                  field:
+                    manualOverride.field,
+
+                  documentType:
+                    manualOverride.documentType,
+
+                  value:
+                    String(
+                      manualOverride.value
+                    ).trim(),
+                }
+              : undefined,
+        },
+      ] as any);
+
+      // ---------------------------------------------------------------------
+      // Return updated case to frontend
+      // ---------------------------------------------------------------------
+      return res.json({
+        success: true,
+
+        caseId:
+          shipmentCase.id,
+
+        verificationStatus:
+          shipmentCase.verificationStatus,
+
+        humanReviewed:
+          shipmentCase.humanReviewed,
+
+        review:
+          shipmentCase.humanReviewDecision,
+
+        case:
+          shipmentCase,
+      });
+    } catch (error: any) {
+      console.error(
+        "Human review failed:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+
+        error:
+          error?.message ||
+          "Human review failed.",
+      });
+    }
+  }
+);
 
 app.post(
   "/api/pipeline/process/:emailId",
@@ -1522,6 +1896,7 @@ async function processNewEmails():
       console.log(
         `[Pipeline] Processing this run: ${processingQueue.length}`
       );
+
     // ----------------------------------
     // Only new/changed emails enter
     // Gemini / DS1 / DS2.
