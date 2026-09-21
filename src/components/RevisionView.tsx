@@ -20,12 +20,7 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
 }) => {
   const revisionCases = cases.filter((c) => c.hasRevision);
 
-  // ✅ Officially set the status to NEEDS_REVIEW so it appears in Human Review
   const handleSendToReview = (c: ShipmentCase) => {
-    c.verificationStatus = "NEEDS_REVIEW";
-    if (c.revisionComparison) {
-      c.revisionComparison.overallOutcome = "NEEDS_HUMAN_REVIEW";
-    }
     onNavigateToHumanReview(c.id);
   };
 
@@ -88,18 +83,34 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
               </div>
 
               {/* Status Outcome Banner */}
-              <div className="p-4 bg-amber-50/70 border-b border-amber-200 text-xs text-amber-900 flex items-center justify-between">
+              <div
+                className={`p-4 border-b text-xs flex items-center justify-between ${
+                  rev.overallOutcome === "RESOLVED"
+                    ? "bg-emerald-50/70 border-emerald-200 text-emerald-900"
+                    : "bg-amber-50/70 border-amber-200 text-amber-900"
+                }`}
+              >
                 <div className="flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                  {rev.overallOutcome === "RESOLVED" ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  ) : (
+                    <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                  )}
+
                   <div>
-                    <strong>Outcome:</strong> {rev.correctedFields.length} requested corrections completed •{" "}
-                    <span className="text-red-700 font-bold">
-                      {rev.unexpectedChanges.length} unexpected modification detected
-                    </span>
+                    <strong>Outcome:</strong>{" "}
+                    {rev.correctedFields.filter(
+                      (field) => field.status === "CORRECTED"
+                    ).length}{" "}
+                    corrections completed •{" "}
+                    {rev.unexpectedChanges.length} unexpected changes
                   </div>
                 </div>
-                <span className="text-[11px] font-semibold bg-amber-200/70 px-2 py-0.5 rounded text-amber-900">
-                  Human Review Required
+
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded">
+                  {rev.overallOutcome === "RESOLVED"
+                    ? "Resolved"
+                    : "Human Review Required"}
                 </span>
               </div>
 
@@ -130,10 +141,17 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                           <td className="py-3 px-4 font-mono text-slate-500 line-through">{String(cf.v1Value)}</td>
                           <td className="py-3 px-4 font-mono font-bold text-emerald-700">{String(cf.v2Value)}</td>
                           <td className="py-3 px-4">
-                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              CORRECTED
-                            </span>
+                            {cf.status === "CORRECTED" ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                CORRECTED
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded">
+                                <AlertTriangle className="w-3 h-3 text-red-600" />
+                                STILL MISMATCH
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -166,7 +184,19 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                     Revision Agent Forensic Summary:
                   </div>
                   <p className="leading-relaxed text-slate-600">
-                    The carrier successfully corrected Container Count and Gross Weight. However, Consignee was altered from <strong>"PACIFIC INDUSTRIAL TRADING LTD"</strong> to <strong>"PACIFIC INDUSTRIAL LOGISTICS GROUP LTD"</strong>.
+                    {rev.overallOutcome === "RESOLVED"
+                      ? `BL V2 resolved all identified discrepancies. ${
+                          rev.correctedFields.filter(
+                            (field) => field.status === "CORRECTED"
+                          ).length
+                        } field(s) were successfully corrected.`
+                      : `BL V2 requires human review. ${
+                          rev.correctedFields.filter(
+                            (field) => field.status === "STILL_MISMATCH"
+                          ).length
+                        } field(s) remain mismatched and ${
+                          rev.unexpectedChanges.length
+                        } unexpected change(s) were detected.`}
                   </p>
                 </div>
               </div>

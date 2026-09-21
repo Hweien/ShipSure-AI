@@ -10,7 +10,7 @@ import {
   AlertCircle
 } from "lucide-react";
 
-import { ShipmentCase } from "../types";
+import { ShipmentCase, ComparisonField } from "../types";
 import { findSimilarCases } from "../services/agents";
 
 interface WatchdogViewProps {
@@ -18,6 +18,8 @@ interface WatchdogViewProps {
 }
 
 export const WatchdogView: React.FC<WatchdogViewProps> = ({ cases }) => {
+  const [selectedCase, setSelectedCase] = React.useState<ShipmentCase | null>(null);
+  const [selectedPatternCases, setSelectedPatternCases] = React.useState<ShipmentCase[]>([]);
   const fieldCounts: Record<string, number> = {
     container_count: 0,
     gross_weight_kg: 0,
@@ -52,37 +54,14 @@ export const WatchdogView: React.FC<WatchdogViewProps> = ({ cases }) => {
 
   // Safely handles the situation where there are no defects 
   const mostFrequentFieldName =
-    mostFrequentField && mostFrequentField[1] > 0
-      ? fieldLabels[mostFrequentField[0]]
-      : null;
+    mostFrequentField && mostFrequentField[1] >= 2
+        ? fieldLabels[mostFrequentField[0]]
+        : null;
 
   const mostFrequentFieldCount =
-    mostFrequentField && mostFrequentField[1] > 0
+    mostFrequentField && mostFrequentField[1] >= 2
       ? mostFrequentField[1]
       : 0;
-
-  const agentStages = [
-    {
-      name: "Email Classification Agent",
-      details: "Classifies incoming shipment emails and identifies relevant email categories.",
-    },
-    {
-      name: "Document Extraction Agent",
-      details: "Reads shipment attachments and extracts document content from SI and BL files.",
-    },
-    {
-      name: "Document Identification Agent",
-      details: "Identifies whether uploaded documents are Shipping Instructions, Bills of Lading, or other documents.",
-    },
-    {
-      name: "Field Extraction Agent",
-      details: "Extracts the seven required shipment fields from identified documents.",
-    },
-    {
-      name: "Verification Agent",
-      details: "Compares the extracted SI and BL information and produces the shipment verification result.",
-    },
-  ];
 
   const activeMemoryCase = [...(cases ?? [])]
     .filter((c) => c.hasDefect)
@@ -118,7 +97,22 @@ export const WatchdogView: React.FC<WatchdogViewProps> = ({ cases }) => {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {mostFrequentFieldName ? (
-            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
+            <div
+              onClick={() => {
+                const field = mostFrequentField?.[0] as ComparisonField | undefined;
+
+                if (!field) return;
+
+                const matchingCases = (cases ?? []).filter((c) =>
+                  c.defectFields?.includes(field)
+                );
+
+                setSelectedPatternCases(matchingCases);
+              }}
+
+              className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs cursor-pointer hover:border-indigo-300 hover:shadow-md transition"
+              >
+            
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
                   Pattern Detected
@@ -158,42 +152,6 @@ export const WatchdogView: React.FC<WatchdogViewProps> = ({ cases }) => {
             </p>
           </div>
         )}
-      </div>
-
-      {/* Multi-Agent Live Collaboration Pipeline */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-              <BrainCircuit className="w-4 h-4 text-indigo-600" />
-              Multi-Agent Collaboration Trace
-            </h2>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Sequence of coordinated specialized agents processing incoming documents
-            </p>
-          </div>
-          <span className="text-xs bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full font-semibold">
-            Processing Pipeline
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 text-xs">
-            {agentStages.map((stage, index) => (
-              <div
-                key={stage.name}
-                className="p-3.5 bg-slate-50 rounded-lg border border-slate-200 relative"
-              >
-                <div className="font-bold text-indigo-900 flex items-center gap-1.5 mb-1">
-                  <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
-                  {index + 1}. {stage.name}
-                </div>
-
-                <p className="text-slate-600 leading-snug">
-                  {stage.details}
-                </p>
-              </div>
-            ))}
-          </div>
       </div>   
 
       {/* Institutional Memory & Similar Case Retrieval */}
@@ -208,8 +166,17 @@ export const WatchdogView: React.FC<WatchdogViewProps> = ({ cases }) => {
             similarCases.map((similarCase) => (
               <div
                 key={similarCase.caseId}
-                className="p-3 bg-slate-50 rounded-lg border border-slate-200"
-              >
+                onClick={() => {
+                  const matchingCase = (cases ?? []).find(
+                    (c) => c.shipmentReference === similarCase.shipmentReference
+                  );
+
+                  if (matchingCase) {
+                    setSelectedCase(matchingCase);
+                  }
+                }}
+                className="p-3 bg-slate-50 rounded-lg border border-slate-200 cursor-pointer hover:border-indigo-300 hover:bg-indigo-50 transition"
+                >
                 <div className="font-bold text-slate-800">
                   Similar Case: {similarCase.shipmentReference}
                 </div>
@@ -238,6 +205,158 @@ export const WatchdogView: React.FC<WatchdogViewProps> = ({ cases }) => {
         </div>
       </div>
     </div>
-  </div>
+            {selectedPatternCases.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 p-5">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  {mostFrequentFieldName} Discrepancy Cases
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  {selectedPatternCases.length} affected case
+                  {selectedPatternCases.length !== 1 ? "s" : ""} found
+                </p>
+              </div>
+
+              <button
+                onClick={() => setSelectedPatternCases([])}
+                className="rounded-lg px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-5 space-y-2 max-h-[60vh] overflow-y-auto">
+              {selectedPatternCases.map((caseItem) => (
+                <div
+                  key={caseItem.emailId}
+                  onClick={() => {
+                    setSelectedPatternCases([]);
+                    setSelectedCase(caseItem);
+                  }}
+                  className="p-4 rounded-lg border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 cursor-pointer transition"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-semibold text-slate-800">
+                        {caseItem.shipmentReference || caseItem.emailId}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Email: {caseItem.emailId}
+                      </p>
+                    </div>
+
+                    <span className="text-xs font-medium text-red-600">
+                      {caseItem.verificationStatus}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {caseItem.defectFields?.map((field) => (
+                      <span
+                        key={field}
+                        className="rounded-full bg-red-50 px-2 py-1 text-[11px] text-red-700"
+                      >
+                        {fieldLabels[field] || field}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedCase && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 p-5">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Shipment Case Details
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  {selectedCase.shipmentReference}
+                </p>
+              </div>
+
+              <button
+                onClick={() => setSelectedCase(null)}
+                className="rounded-lg px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase text-slate-400">
+                    Email ID
+                  </p>
+                  <p className="text-sm font-semibold text-slate-800">
+                    {selectedCase.emailId}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-[10px] font-bold uppercase text-slate-400">
+                    Status
+                  </p>
+                  <p className="text-sm font-semibold text-slate-800">
+                    {selectedCase.verificationStatus}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[10px] font-bold uppercase text-slate-400">
+                  Shipment Reference
+                </p>
+                <p className="text-sm text-slate-800">
+                  {selectedCase.shipmentReference || "N/A"}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[10px] font-bold uppercase text-slate-400">
+                  Defect Fields
+                </p>
+
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {selectedCase.defectFields?.length ? (
+                    selectedCase.defectFields.map((field) => (
+                      <span
+                        key={field}
+                        className="rounded-full bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 border border-red-100"
+                      >
+                        {fieldLabels[field] || field}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-slate-500">
+                      No defect fields
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[10px] font-bold uppercase text-slate-400">
+                  Received Date
+                </p>
+                <p className="text-sm text-slate-800">
+                  {selectedCase.receivedDate
+                    ? new Date(selectedCase.receivedDate).toLocaleString()
+                    : "N/A"}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
