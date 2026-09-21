@@ -13,7 +13,7 @@ import {
   FileText
 } from "lucide-react";
 import { EmailCategory, EmailRecord, ShipmentCase } from "../types";
-import { datasetProvider } from "../services/datasetProvider";
+import { classifyEmail } from "../services/documentIntelligence/emailClassifier";
 
 interface InboxViewProps {
   emails: EmailRecord[];
@@ -32,11 +32,57 @@ export const InboxView: React.FC<InboxViewProps> = ({
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedEmail, setSelectedEmail] = useState<EmailRecord | null>(null);
   const [selectedAttachmentText, setSelectedAttachmentText] = useState<{ path: string; text: string } | null>(null);
+  const [classifying, setClassifying] = useState(false);
+const [emailCategories, setEmailCategories] = useState<
+  Record<string, EmailCategory>
+>({});
+
+const getCategoryLabel = (category: EmailCategory) => {
+  switch (category) {
+    case "BL_COMPARISON":
+      return "BL Comparison";
+    case "SI_REQUEST":
+      return "SI Request";
+    case "INVOICE_QUERY":
+      return "Invoice Query";
+    case "GENERAL":
+      return "General";
+    case "SPAM":
+      return "Spam";
+  }
+};
+
+const getEmailCategory = (email: EmailRecord): EmailCategory | null => {
+  return (
+    emailCategories[email.email_id] ??
+    email.category ??
+    cases.find((c) => c.emailId === email.email_id)?.category ??
+    null
+  );
+};
+
+// Function to classify an email and update its category
+const handleClassifyEmail = async (email: EmailRecord) => {
+  try {
+    setClassifying(true);
+
+    const result = await classifyEmail(email);
+
+    setEmailCategories((prev) => ({
+      ...prev,
+      [email.email_id]: result.category
+    }));
+  } catch (error) {
+    console.error("Failed to classify email:", error);
+  } finally {
+    setClassifying(false);
+  }
+};
 
   // Link cases to emails
   const filteredEmails = emails.filter((e) => {
     const relatedCase = cases.find((c) => c.emailId === e.email_id);
-    const category = relatedCase ? relatedCase.category : "GENERAL";
+    const category = getEmailCategory(e);
 
     if (selectedCategory !== "ALL" && category !== selectedCategory) {
       return false;
@@ -69,9 +115,39 @@ export const InboxView: React.FC<InboxViewProps> = ({
     }
   };
 
-  const openAttachment = (path: string) => {
-    const text = datasetProvider.getAttachmentText(path);
-    setSelectedAttachmentText({ path, text });
+  const openAttachment = async (path: string) => {
+    try {
+      setSelectedAttachmentText({
+        path,
+        text: "Loading attachment..."
+      });
+
+      const response = await fetch("/api/ds1/read-document", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ path })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to read attachment: HTTP ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      setSelectedAttachmentText({
+        path,
+        text: result.text || result.content || "[No text content available]"
+      });
+    } catch (error) {
+      console.error("Failed to open attachment:", error);
+
+      setSelectedAttachmentText({
+        path,
+        text: "Unable to read this attachment."
+      });
+    }
   };
 
   return (
@@ -106,11 +182,11 @@ export const InboxView: React.FC<InboxViewProps> = ({
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
         {[
           { id: "ALL", label: "All Messages", count: emails.length },
-          { id: "BL_COMPARISON", label: "Document Checks (BL)", count: cases.filter(c => c.category === "BL_COMPARISON").length },
-          { id: "SI_REQUEST", label: "SI Requests", count: cases.filter(c => c.category === "SI_REQUEST").length },
-          { id: "INVOICE_QUERY", label: "Invoice Queries", count: cases.filter(c => c.category === "INVOICE_QUERY").length },
-          { id: "GENERAL", label: "General", count: cases.filter(c => c.category === "GENERAL").length },
-          { id: "SPAM", label: "Spam", count: cases.filter(c => c.category === "SPAM").length },
+          { id: "BL_COMPARISON", label: "Document Checks (BL)", count: emails.filter(e => getEmailCategory(e) === "BL_COMPARISON").length },
+          { id: "SI_REQUEST", label: "SI Requests", count: emails.filter(e => getEmailCategory(e) === "SI_REQUEST").length },
+          { id: "INVOICE_QUERY", label: "Invoice Queries", count: emails.filter(e => getEmailCategory(e) === "INVOICE_QUERY").length },
+          { id: "GENERAL", label: "General", count: emails.filter(e => getEmailCategory(e) === "GENERAL").length },
+          { id: "SPAM", label: "Spam", count: emails.filter(e => getEmailCategory(e) === "SPAM").length },
         ].map((tab) => {
           const isActive = selectedCategory === tab.id;
           return (
@@ -149,7 +225,7 @@ export const InboxView: React.FC<InboxViewProps> = ({
           <tbody className="divide-y divide-slate-100">
             {filteredEmails.map((e) => {
               const relatedCase = cases.find((c) => c.emailId === e.email_id);
-              const category = relatedCase ? relatedCase.category : "GENERAL";
+              const category = getEmailCategory(e);
               const priority = relatedCase ? relatedCase.priorityScore : 10;
 
               return (
@@ -172,7 +248,13 @@ export const InboxView: React.FC<InboxViewProps> = ({
                     {e.from || e.sender}
                   </td>
                   <td className="py-3.5 px-4">
-                    {getCategoryBadge(category)}
+                    {category ? (
+                      getCategoryBadge(category)
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+                        Unclassified
+                      </span>
+                    )}
                   </td>
                   <td className="py-3.5 px-4">
                     <div className="flex items-center gap-1.5 font-bold text-slate-800">
@@ -275,25 +357,22 @@ export const InboxView: React.FC<InboxViewProps> = ({
               </button>
 
               <div className="flex items-center gap-2">
-                {cases.find((c) => c.emailId === selectedEmail.email_id && c.category === "BL_COMPARISON") ? (
+                {!getEmailCategory(selectedEmail) ? (
                   <button
-                    onClick={() => {
-                      const c = cases.find((item) => item.emailId === selectedEmail.email_id);
-                      if (c) {
-                        onSelectCase(c.id);
-                        setSelectedEmail(null);
-                      }
-                    }}
-                    className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition cursor-pointer"
+                    onClick={() => handleClassifyEmail(selectedEmail)}
+                    disabled={classifying}
+                    className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 font-semibold px-4 py-2 rounded-lg transition disabled:opacity-50 cursor-pointer"
                   >
-                    Open SI vs BL Verification
+                    {classifying ? "Classifying..." : "Classify Email"}
                   </button>
                 ) : (
-                  <span className="text-[11px] text-slate-500 italic bg-slate-100 px-2.5 py-1.5 rounded-md border border-slate-200">
-                    ℹ️ Triage Complete: Non-comparison email
-                  </span>
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span className="text-xs font-semibold text-emerald-700">
+                      {getCategoryLabel(getEmailCategory(selectedEmail)!)}
+                    </span>
+                  </div>
                 )}
-                
                 <button
                   onClick={() => setSelectedEmail(null)}
                   className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium px-4 py-2 rounded-lg transition cursor-pointer"

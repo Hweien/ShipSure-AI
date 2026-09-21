@@ -81,6 +81,9 @@ export interface EmailRecord {
   date?: string;
   body: string;
   attachments: string[];
+  category?: EmailCategory;
+  classificationConfidence?: number;
+  classificationEvidence?: string;
 }
 
 // type for the result produced by the classifier
