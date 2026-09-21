@@ -1,4 +1,5 @@
 import React from "react";
+import shipsureLogo from "../../shipsure-logo.svg";
 import {
   ArrowDown,
   ShieldCheck,
@@ -103,7 +104,7 @@ export const LandingHero: React.FC<LandingHeroProps> = ({ onExplore }) => {
             aria-hidden="true"
           />
           <img
-            src="/shipsure-logo.svg"
+            src={shipsureLogo}
             alt="ShipSure AI logo"
             className="relative w-full h-full object-contain drop-shadow-2xl"
           />
