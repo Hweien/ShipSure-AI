@@ -48,6 +48,20 @@ export default function App() {
       setEmails([...datasetProvider.getEmails()]);
     } catch (error) {
       console.error("Failed to load ShipSure dataset:", error);
+
+      // Still load processed verification cases even if email dataset fails
+      try {
+        const response = await fetch("/api/cases");
+
+        if (!response.ok) {
+          throw new Error(`Failed to load cases: HTTP ${response.status}`);
+        }
+
+        const caseData = await response.json();
+        setCases(caseData);
+      } catch (caseError) {
+        console.error("Failed to load processed cases:", caseError);
+      }
     }
   };
 
@@ -89,6 +103,9 @@ export default function App() {
     return itemDate >= start && itemDate <= now;
   };
   
+  console.log("ALL CASES FROM BACKEND:", cases.length);
+  console.log("FIRST CASE:", cases[0]);
+
   // Synchronize Global Date Filter across all data
   const filteredCases = cases.filter((c) => {
     const dateStr = c.receivedDate ?? "";

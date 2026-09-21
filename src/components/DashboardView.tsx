@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { 
   Inbox, 
   FileCheck2, 
@@ -29,33 +29,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigate,
   onStartPriority
 }) => {
-  const [briefingGenerating, setBriefingGenerating] = useState(false);
-  const [customBriefing, setCustomBriefing] = useState<string | null>(null);
-
   const getGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 12) return "Good morning";
     if (hour < 18) return "Good afternoon";
     return "Good evening";
   };
- // Filter cases based on the selected date filter
-  const filteredCases = cases.filter((c) => {
-    if (dateFilter.preset === "TODAY") {
-      return c.receivedDate.startsWith("2026-09-19");
-    } else if (dateFilter.preset === "YESTERDAY") {
-      return c.receivedDate.startsWith("2026-09-18");
-    } else if (dateFilter.preset === "LAST_7_DAYS" || dateFilter.preset === "THIS_MONTH") {
-      return true; // includes all 12 demo emails
-    }
-    return true;
-  });
 
+  const filteredCases = cases;
   const totalEmails = filteredCases.length;
   const verifiedDocs = filteredCases.filter((c) => c.category === "BL_COMPARISON").length;
   const mismatches = filteredCases.filter((c) => c.verificationStatus === "MISMATCH").length;
   const humanReviews = filteredCases.filter((c) => c.verificationStatus === "NEEDS_REVIEW").length;
   const autoVerified = filteredCases.filter((c) => c.verificationStatus === "OK").length;
-  const autoRate = verifiedDocs > 0 ? Math.round((autoVerified / verifiedDocs) * 100) : 0;
+  const autoRate = totalEmails > 0
+    ? Math.round((autoVerified / totalEmails) * 100)
+    : 0;
+
+  const generateBriefing = () => {
+    const topAttentionCase = filteredCases
+      .filter(
+        (c) =>
+          c.verificationStatus === "MISMATCH" ||
+          c.verificationStatus === "NEEDS_REVIEW"
+      )
+      .sort((a, b) => b.priorityScore - a.priorityScore)[0];
+
+    const pendingCaseText = topAttentionCase
+      ? ` Highest-priority review: ${topAttentionCase.shipmentReference || topAttentionCase.emailId}.`
+      : "";
+
+    return `Operational Briefing: Evaluated ${verifiedDocs} document sets. Identified ${mismatches} carrier discrepancies and ${humanReviews} cases requiring human review. ${autoVerified} cases were auto-verified clean.${pendingCaseText}`;
+  };
+  const briefing = generateBriefing();
 
   // High priority cases needing attention
   const attentionCases = filteredCases
@@ -63,20 +69,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .sort((a, b) => b.priorityScore - a.priorityScore)
     .slice(0, 4);
 
-  const handleGenerateBriefing = () => {
-    setBriefingGenerating(true);
-    setTimeout(() => {
-      setBriefingGenerating(false);
-      const topMismatch = attentionCases.find(c => c.verificationStatus === "MISMATCH");
-      const topReview = attentionCases.find(c => c.verificationStatus === "NEEDS_REVIEW" || c.hasRevision);
-      
-      setCustomBriefing(
-        `Operational Briefing: Evaluated ${verifiedDocs} document sets. Identified ${mismatches} carrier discrepancies and ${humanReviews} cases requiring human review. ` +
-        (topMismatch ? `Priority focus: ${topMismatch.shipmentReference}. ` : "All discrepancies handled. ") +
-        (topReview ? `Review pending on ${topReview.shipmentReference}.` : "Review queue clear.")
-      );
-    }, 400);
-  };
+  const categoryCount = new Set(
+    filteredCases.map((c) => c.category)
+  ).size;
+
+  const revisionCases = filteredCases.filter(
+    (c) => c.hasRevision
+  );
+
+  const revisionCount = revisionCases.length;
+
+  const unexpectedRevisionCount = revisionCases.filter(
+    (c) =>
+      c.revisionComparison?.unexpectedChanges &&
+      c.revisionComparison.unexpectedChanges.length > 0
+  ).length;
 
   return (
     <div id="dashboard-view" className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -113,24 +120,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <p className="text-[11px] text-blue-200">Synthesized from current operational inbox & verification evidence</p>
             </div>
           </div>
-          <button
-            onClick={handleGenerateBriefing}
-            disabled={briefingGenerating}
-            className="text-xs bg-white/10 hover:bg-white/20 text-white border border-white/20 px-3 py-1.5 rounded-lg transition font-medium cursor-pointer"
-          >
-            {briefingGenerating ? "Synthesizing..." : "Refresh Briefing"}
-          </button>
         </div>
 
         <p className="text-xs text-blue-100 mt-3 leading-relaxed">
-          {customBriefing || (
-            <>
-              <strong>3 urgent document discrepancies</strong> require carrier amendments. 
-              <strong> 3 cases</strong> awaiting human optical confirmation (zero-guess rule enforced). 
-              <strong> 1 revised draft BL</strong> received with an unexpected legal entity modification. 
-              Carrier vessel loading cutoff for flagship failure <strong>SHP-8291</strong> is in 12 hours.
-            </>
-          )}
+          {briefing}
         </p>
 
         <div className="flex flex-wrap items-center gap-4 mt-4 pt-3 border-t border-white/10 text-xs text-blue-200">
@@ -301,7 +294,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="w-2 h-2 rounded-full bg-emerald-500 mt-1.5 shrink-0"></div>
                 <div>
                   <div className="font-semibold text-slate-800">Inbox Intelligence Agent</div>
-                  <p className="text-[11px] text-slate-500">Triage: 12 emails classified into 5 categories</p>
+                  <p className="text-[11px] text-slate-500">Triage: {totalEmails} emails classified into {categoryCount} categories</p>
                 </div>
               </div>
 
@@ -325,7 +318,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="w-2 h-2 rounded-full bg-purple-500 mt-1.5 shrink-0"></div>
                 <div>
                   <div className="font-semibold text-slate-800">Revision Intelligence Agent</div>
-                  <p className="text-[11px] text-slate-500">3-way diff caught unsolicited Consignee change on V2</p>
+                  <p className="text-[11px] text-slate-500">
+                    {revisionCount > 0
+                      ? `3-way SI vs BL V1 vs BL V2 analysis: ${revisionCount} revision${revisionCount === 1 ? "" : "s"}, ${unexpectedRevisionCount} unexpected change${unexpectedRevisionCount === 1 ? "" : "s"} detected`
+                      : "No revised BL cases detected in the current dataset"}
+                  </p>
                 </div>
               </div>
             </div>
