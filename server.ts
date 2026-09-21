@@ -1572,19 +1572,68 @@ app.get(
 // ---------------------------------------------------------------------------
 // CS1 orchestration and revision workflow
 // ---------------------------------------------------------------------------
-app.post("/api/orchestration/run", async (req, res) => {
-  try {
-    const caseObj = req.body?.case;
-    if (!caseObj?.id || !caseObj?.category) {
-      return res.status(400).json({ error: "A valid ShipmentCase is required." });
+app.post(
+  "/api/orchestration/run",
+  async (req, res) => {
+    try {
+      const caseId =
+        req.body?.caseId;
+
+      if (!caseId) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "caseId is required.",
+          });
+      }
+
+      const shipmentCase =
+        caseRepository.getById(
+          caseId
+        );
+
+      if (!shipmentCase) {
+        return res
+          .status(404)
+          .json({
+            error:
+              "Shipment case not found.",
+          });
+      }
+
+      const events =
+        orchestrateCase(
+          shipmentCase
+        );
+
+      await auditRepository.append(
+        events
+      );
+
+      return res.json({
+        success: true,
+        caseId:
+          shipmentCase.id,
+        events,
+      });
+    } catch (error: any) {
+      console.error(
+        "Orchestration failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          error:
+            error.message ||
+            "Orchestration failed",
+        });
     }
-    const events = orchestrateCase(caseObj);
-    await auditRepository.append(events);
-    return res.json({ caseId: caseObj.id, events });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
   }
-});
+);
 
 app.get("/api/orchestration/events", async (req, res) => {
   try {
