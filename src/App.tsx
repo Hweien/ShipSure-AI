@@ -29,7 +29,7 @@ export default function App() {
   const hasTestedProcessEmail = useRef(false);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
-  const [dateFilter, setDateFilter] = useState<GlobalDateFilter>({ preset: "TODAY" });
+  const [dateFilter, setDateFilter] = useState<GlobalDateFilter>({ preset: "LAST_7_DAYS" });
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [visionOcrOpen, setVisionOcrOpen] = useState(false);
   const [cases, setCases] = useState<ShipmentCase[]>([]);
