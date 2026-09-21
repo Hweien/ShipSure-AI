@@ -49,26 +49,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const automatedVerificationRate =
     totalCases > 0 ? (automaticallyVerifiedCases / totalCases) * 100 : 0;
 
-  // --- 2. Historical Trend Data ---
-  const historicalTrendData = Object.entries(
-    cases.reduce((acc, c) => {
-      const date = new Date(c.receivedDate).toLocaleDateString();
-
-      if (!acc[date]) {
-        acc[date] = { date, total: 0, mismatches: 0, reviews: 0 };
-      }
-      acc[date].total++;
-      if (c.verificationStatus === "MISMATCH") acc[date].mismatches++;
-      if (c.verificationStatus === "NEEDS_REVIEW") acc[date].reviews++;
-
-      return acc;
-    }, {} as Record<string, { date: string; total: number; mismatches: number; reviews: number; }>)
-  )
-    .map(([, value]) => value)
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-  // --- 3. Field Frequency Calculation ---
-  const fieldCounts: Record<string, number> = {
+  // --- 2. Field Frequency Calculation ---
+  const fieldCounts: Record<ComparisonField, number> = {
     container_count: 0,
     gross_weight_kg: 0,
     port_of_discharge: 0,
@@ -78,10 +60,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     notify_party: 0
   };
 
-  cases.forEach((c) => {
-    c.defectFields.forEach((f) => {
-      if (fieldCounts[f] !== undefined) {
-        fieldCounts[f]++;
+  (cases ?? []).forEach((c) => {
+    // Only count cases that actually have a mismatch
+    if (c.verificationStatus !== "MISMATCH") return;
+    // Count each field only once per case
+    const uniqueFields = new Set(c.defectFields ?? []);
+    uniqueFields.forEach((field) => {
+      if (field in fieldCounts) {
+        fieldCounts[field as ComparisonField]++;
       }
     });
   });
@@ -191,7 +177,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         )}
       </div>
 
-      {/* Verification Summary (Friend's Addition) */}
+      {/* Verification Summary*/}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
           <div className="text-xs text-slate-500">Total Cases</div>
@@ -215,70 +201,67 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
       </div>
 
-      {/* Historical Verification Trends (Friend's Addition) */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
-        <div className="mb-4">
-          <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-            Historical Verification Trends
-          </h3>
-          <p className="text-[11px] text-slate-500">
-            Tracks verification mismatches and human-review cases over time
-          </p>
-        </div>
-
+      {/* Field Mismatch Distribution */}
+      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm mt-4">
+        <h3 className="text-sm font-semibold text-slate-900">
+          Field Mismatch Distribution
+        </h3>
+        <p className="text-xs text-slate-500 mt-1 mb-3">
+          Number of cases with discrepancies by field
+        </p>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={historicalTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-              <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: "#1e293b", borderRadius: "8px", color: "#fff", fontSize: "12px" }}
+            <BarChart
+              data={chartData}
+              margin={{
+                top: 10,
+                right: 10,
+                left: -20,
+                bottom: 20,
+              }}
+            > 
+              <CartesianGrid
+                strokeDasharray="3 3"
+                vertical={false}
+                stroke="#f1f5f9"
               />
-              <Line type="monotone" dataKey="mismatches" stroke="#ef4444" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} name="Mismatches" />
-              <Line type="monotone" dataKey="reviews" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} name="Needs Review" />
-            </LineChart>
+              <XAxis
+                dataKey="field"
+                tick={{ fontSize: 10 }}
+                angle={-25}
+                textAnchor="end"
+              />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fontSize: 11 }}
+              />
+              <Tooltip
+                contentStyle={{
+                backgroundColor: "#eff1f5",
+                borderRadius: "8px",
+                color: "#230860",
+                fontSize: "12px",
+              }}
+              />
+              <Bar
+                dataKey="count"
+                fill="#230860"
+                radius={[4, 4, 0, 0]}
+                onClick={(entry: any) => {
+                  const targetKey = entry?.payload?.key || entry?.key;
+                  if (targetKey) {
+                    onSelectFieldDrillDown(
+                      targetKey as ComparisonField
+                    );
+                  }
+                }}
+                cursor="pointer"
+              />
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
-
-      {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Discrepancies by Field */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                Discrepancies by Field
-              </h3>
-              <p className="text-[11px] text-slate-500">
-                Click a bar to filter shipments
-              </p>
-            </div>
-          </div>
-
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="field" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" />
-                <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                <Tooltip contentStyle={{ backgroundColor: "#1e293b", borderRadius: "8px", color: "#fff", fontSize: "12px" }} />
-                <Bar
-                  dataKey="count"
-                  fill="#DB2777"
-                  radius={[4, 4, 0, 0]}
-                  onClick={(entry: any) => {
-                    const targetKey = entry?.payload?.key || entry?.key;
-                    if (targetKey) onSelectFieldDrillDown(targetKey as ComparisonField);
-                  }}
-                  cursor="pointer"
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
+      
         {/* Verification Status Breakdown */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs">
           <div className="flex items-center justify-between mb-4">
@@ -315,7 +298,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           </div>
         </div>
         
-        {/* Field Comparison Status (Friend's Addition) */}
+        {/* Field Comparison Status*/}
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs lg:col-span-2">
           <div className="mb-4">
             <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
@@ -340,6 +323,5 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
 
       </div>
-    </div>
   );
 };

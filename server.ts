@@ -29,6 +29,7 @@ import type {
   ComparisonField,
   ExtractedDocumentFields,
 } from "./src/types";
+import { compareDocuments } from "./src/services/comparison/comparisonService";
 
 dotenv.config();
 
@@ -1143,7 +1144,42 @@ app.get("/api/dataset/emails", async (_req, res) => {
     }
     return res.json([]);
   } catch (error: any) {
-    return res.status(502).json({ error: `Dataset read failed: ${error.message}` });
+    return res.status(502).json({ error: `Dataset read failed: ${error.message}` 
+    });
+  }
+});
+// DS2 - Compare SI and BL
+app.post("/api/ds2/compare", async (req, res) => {
+  try {
+    const { siData, blData } = req.body;
+
+    const result = await compareDocuments(
+      siData,
+      blData
+    );
+
+    res.json(result);
+
+  } catch (error) {
+
+    console.error("Comparison error:", error);
+
+    res.status(500).json({
+      error: "Document comparison failed",
+    });
+  }
+});
+
+// Gemini Multi-Agent & Copilot API endpoint
+app.post("/api/copilot/chat", async (req, res) => {
+  const { prompt, context, agentId, mode } = req.body;
+  const ai = getGeminiClient();
+
+  if (!ai) {
+    return res.json({
+      fallback: true,
+      message: "Server-side GEMINI_API_KEY not configured. Using deterministic multi-agent orchestration engine.",
+    });
   }
 });
 
