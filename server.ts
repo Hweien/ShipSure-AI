@@ -86,6 +86,13 @@ const PROCESSED_CACHE_FILE =
     "processed-email-cases.json"
   );
 
+const BASELINE_CACHE_FILE =
+  path.resolve(
+    process.cwd(),
+    "data",
+    "baseline-processed-email-cases.json"
+  );
+
 const EXISTING_CASES_FILE =
   path.join(
     RUNTIME_DIR,
@@ -327,9 +334,11 @@ async function loadProcessedState() {
     }
   );
 
-  // ----------------------------------
-  // Load permanent processed cache
-  // ----------------------------------
+  let loaded = false;
+
+  // --------------------------------------------------
+  // 1. Prefer this laptop's runtime cache
+  // --------------------------------------------------
   try {
     const content =
       await fs.readFile(
@@ -340,18 +349,7 @@ async function loadProcessedState() {
     processedEmailCache =
       JSON.parse(content);
 
-    for (
-      const entry of
-      Object.values(
-        processedEmailCache
-      )
-    ) {
-      if (entry?.case) {
-        caseRepository.save(
-          entry.case
-        );
-      }
-    }
+    loaded = true;
 
     console.log(
       `[Pipeline Cache] Loaded ${
@@ -362,64 +360,66 @@ async function loadProcessedState() {
     );
   } catch (error: any) {
     if (
-      error?.code !==
-      "ENOENT"
+      error?.code !== "ENOENT"
     ) {
       console.error(
-        "[Pipeline Cache] Failed to load cache:",
+        "[Pipeline Cache] Failed to load runtime cache:",
         error
       );
     }
   }
 
-  // ----------------------------------
-  // One-time recovery of cases from
-  // your current run
-  // ----------------------------------
-  try {
-    const content =
-      await fs.readFile(
-        EXISTING_CASES_FILE,
-        "utf8"
-      );
+  // --------------------------------------------------
+  // 2. New teammate / fresh clone:
+  //    load team baseline
+  // --------------------------------------------------
+  if (!loaded) {
+    try {
+      const content =
+        await fs.readFile(
+          BASELINE_CACHE_FILE,
+          "utf8"
+        );
 
-    const existingCases =
-      JSON.parse(content);
+      processedEmailCache =
+        JSON.parse(content);
 
-    if (
-      Array.isArray(
-        existingCases
-      )
-    ) {
-      for (
-        const shipmentCase of
-        existingCases
-      ) {
-        if (
-          shipmentCase?.id &&
-          shipmentCase?.emailId &&
-          !processedEmailCache[
-            shipmentCase.emailId
-          ]
-        ) {
-          caseRepository.save(
-            shipmentCase
-          );
-        }
-      }
+      loaded = true;
 
       console.log(
-        `[Pipeline Cache] Restored ${existingCases.length} existing cases`
+        `[Pipeline Cache] Loaded team baseline: ${
+          Object.keys(
+            processedEmailCache
+          ).length
+        } emails`
       );
+
+      // Give this teammate their own runtime copy
+      await saveProcessedEmailCache();
+    } catch (error: any) {
+      if (
+        error?.code !== "ENOENT"
+      ) {
+        console.error(
+          "[Pipeline Cache] Failed to load baseline:",
+          error
+        );
+      }
     }
-  } catch (error: any) {
-    if (
-      error?.code !==
-      "ENOENT"
-    ) {
-      console.error(
-        "[Pipeline Cache] Existing-case restore failed:",
-        error
+  }
+
+  // --------------------------------------------------
+  // Restore cases into memory
+  // --------------------------------------------------
+  for (
+    const entry of
+    Object.values(
+      processedEmailCache
+    )
+  ) {
+    if (entry?.case) {
+      caseRepository.save(
+        entry.case
       );
     }
   }
@@ -2004,17 +2004,22 @@ async function processNewEmails():
       await saveProcessedEmailCache();
     }
 
+    // --------------------------------------------------
+    // No changes = no Gemini + no terminal noise
+    // --------------------------------------------------
+    if (queue.length === 0) {
+      return;
+    }
+
+    // Only log when there is actual work
+    console.log(
+      `[Pipeline] Detected ${queue.length} new/changed email(s)`
+    );
+
     console.log(
       `[Pipeline] Inbox total: ${emails.length}`
     );
 
-    console.log(
-      `[Pipeline] Already processed: ${pipelineRunState.skipped}`
-    );
-
-    console.log(
-      `[Pipeline] New/changed: ${queue.length}`
-    );
 
     // ----------------------------------
     // Only new/changed emails enter
