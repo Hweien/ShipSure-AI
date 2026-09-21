@@ -167,7 +167,6 @@ export const Header: React.FC<HeaderProps> = ({
             className="bg-transparent border-none text-slate-800 focus:outline-none cursor-pointer pr-1"
           >
             <option value="TODAY">{`Today (${todayLabel})`}</option>
-            <option value="YESTERDAY">Yesterday</option>
             <option value="LAST_7_DAYS">Last 7 Days</option>
             <option value="LAST_30_DAYS">Last 30 Days</option>
             <option value="THIS_MONTH">This Month</option>
