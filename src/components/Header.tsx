@@ -62,7 +62,7 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header
       id="shipsure-header"
-      className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs"
+      className="h-16 bg-white border-b border-slaSte-200 px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs"
     >
       {/* Left: Brand Identity */}
       <div className="flex items-center gap-4">
