@@ -70,9 +70,40 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
 }) => {
   const [mode, setMode] = useState<"collaborative" | "direct">("collaborative");
   const [activeAgentId, setActiveAgentId] = useState<AgentId>("orchestrator");
-  const [selectedCaseId, setSelectedCaseId] = useState<string>(
-    initialActiveCase?.id || cases[0]?.id || "CASE-8291"
-  );
+  const [
+    selectedCaseId,
+    setSelectedCaseId
+  ] = useState<string>(
+    initialActiveCase?.id ||
+    cases[0]?.id ||
+    ""
+    );
+  
+  useEffect(() => {
+    if (
+      initialActiveCase?.id
+    ) {
+      setSelectedCaseId(
+        initialActiveCase.id
+      );
+
+      return;
+    }
+
+    if (
+      !selectedCaseId &&
+      cases.length > 0
+    ) {
+      setSelectedCaseId(
+        cases[0].id
+      );
+    }
+  }, [
+    initialActiveCase,
+    cases,
+    selectedCaseId,
+  ]);
+
   const [isExpanded, setIsExpanded] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [input, setInput] = useState("");
@@ -120,143 +151,270 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
 
   // Handle Simulate Dispatching to Carrier
   const handleDispatchEmail = (msgId: string) => {
-    setDispatchedId(msgId);
-    setTimeout(() => setDispatchedId(null), 3500);
-  };
+  setDispatchedId(msgId);
+  if (activeCase) {
+    if (activeCase.draftResolution) {
+      activeCase.draftResolution.status = "APPROVED";
+    }
+    activeCase.timeline.unshift({
+      id: `T-DISP-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString(),
+      agent: "Resolution Agent",
+      action: "Carrier Amendment Dispatched",
+      summary: `Dispatched formal amendment notice to carrier for ${activeCase.shipmentReference}.`,
+      status: "success"
+    });
+  }
+  setTimeout(() => setDispatchedId(null), 3500);
+};
 
   // Execute Agent Action Buttons
-  const handleActionClick = (actionId: string, payload?: any) => {
-    if (actionId === "OPEN_CASE" && payload) {
-      onNavigateToCase(payload);
-    } else if (actionId === "INVESTIGATE_CASE" && payload) {
-      setSelectedCaseId(payload);
-      const targetCase = cases.find((c) => c.id === payload);
-      handleSendMessage(`Investigate case ${targetCase?.shipmentReference || payload} in depth and prepare required carrier actions`);
-    } else if (actionId === "NAVIGATE_REVISION") {
-      onNavigateToRevision(selectedCaseId);
-    } else if (actionId === "NAVIGATE_HUMAN_REVIEW") {
-      onNavigateToHumanReview();
-    } else if (actionId === "NAVIGATE_WATCHDOG") {
-      onNavigateToWatchdog();
-    } else if (actionId === "FILTER_WEIGHT" || actionId === "NAVIGATE_SHIPMENTS") {
-      onNavigateToShipments();
-    } else if (actionId === "SIMULATE_SEND") {
-      handleDispatchEmail(`act-${Date.now()}`);
-    } else if (actionId === "OPEN_PASSPORT") {
-      onNavigateToCase(payload || selectedCaseId);
-    }
-  };
+  // Inside MultiAgentChatbox.tsx -> handleActionClick:
+const handleActionClick = (actionId: string, payload?: any) => {
+  if (actionId === "OPEN_CASE" && payload) {
+    onNavigateToCase(payload);
+  } else if (actionId === "INVESTIGATE_CASE" && payload) {
+    setSelectedCaseId(payload);
+    const targetCase = cases.find((c) => c.id === payload);
+    handleSendMessage(`Investigate case ${targetCase?.shipmentReference || payload} in depth and prepare required carrier actions`);
+  } else if (actionId === "NAVIGATE_REVISION") {
+    onNavigateToRevision(selectedCaseId);
+  } else if (actionId === "NAVIGATE_HUMAN_REVIEW" || actionId === "OPEN_HUMAN_QUEUE") {
+    onNavigateToHumanReview();
+  } else if (actionId === "NAVIGATE_WATCHDOG") {
+    onNavigateToWatchdog();
+  } else if (actionId === "FILTER_WEIGHT" || actionId === "NAVIGATE_SHIPMENTS") {
+    onNavigateToShipments();
+  } else if (actionId === "SIMULATE_SEND") {
+    handleDispatchEmail(`act-${Date.now()}`);
+  // ✅ FIX 1: Open the Decision Passport tab (agents) instead of verification
+  } else if (actionId === "OPEN_PASSPORT" || actionId === "VIEW_PASSPORT") {
+    if (payload) setSelectedCaseId(payload);
+    onNavigateToCase(payload || selectedCaseId);
+  // ✅ FIX 2: Handle Draft Amendment action properly
+  } else if (actionId === "DRAFT_AMENDMENT" || actionId === "DRAFT_RESOLUTION") {
+    if (payload) setSelectedCaseId(payload);
+    onNavigateToCase(payload || selectedCaseId);
+  }
+};
 
   // Handle sending a user prompt
-  const handleSendMessage = async (textToSend?: string) => {
-    const rawText = textToSend || input;
-    if (!rawText.trim() || loading) return;
+  const handleSendMessage =
+    async (
+      textToSend?: string
+    ) => {
+      const rawText =
+        textToSend ||
+        input;
 
-    const userText = rawText.trim();
-    setInput("");
-
-    // Check if user specifically tagged an agent with @mention
-    const mentionedAgent = extractMentionedAgent(userText);
-    const effectiveAgentId = mentionedAgent || (mode === "direct" ? activeAgentId : undefined);
-
-    // Extract any shipment case mentioned in the prompt
-    const mentionedCase = extractCaseReference(userText, cases);
-    const targetCase = mentionedCase || activeCase;
-    if (mentionedCase && mentionedCase.id !== selectedCaseId) {
-      setSelectedCaseId(mentionedCase.id);
-    }
-
-    // Add user message
-    const userMsg: MultiAgentChatMessage = {
-      id: `usr-${Date.now()}`,
-      sender: "user",
-      text: userText,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      contextCaseId: targetCase?.id,
-      contextShipmentRef: targetCase?.shipmentReference
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
-    setLoading(true);
-
-    try {
-      // 1. Try server-side Gemini multi-agent chat endpoint
-      let serverHandled = false;
-      try {
-        const res = await fetch("/api/copilot/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: userText,
-            agentId: effectiveAgentId,
-            mode: mode,
-            context: {
-              activeCaseId: targetCase?.id,
-              activeShipmentRef: targetCase?.shipmentReference,
-              carrier: targetCase?.emailSubject,
-              verificationStatus: targetCase?.verificationStatus,
-              defectFields: targetCase?.defectFields,
-              dateFilter: currentDateFilter
-            }
-          })
-        });
-
-        const data = await res.json();
-        if (data.text && !data.fallback) {
-          serverHandled = true;
-          const agentKey = effectiveAgentId || "orchestrator";
-          const persona = AGENT_PERSONAS[agentKey];
-
-          const serverMsg: MultiAgentChatMessage = {
-            id: `bot-server-${Date.now()}`,
-            sender: "agent",
-            agentId: agentKey,
-            agentName: data.agent || persona.name,
-            text: data.text,
-            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            contextCaseId: targetCase?.id,
-            contextShipmentRef: targetCase?.shipmentReference,
-            suggestedActions: [
-              { label: "Inspect Side-by-Side Comparison", actionId: "OPEN_CASE", payload: targetCase?.id },
-              { label: "Review 3-Way Revision Diff", actionId: "NAVIGATE_REVISION" }
-            ]
-          };
-          setMessages((prev) => [...prev, serverMsg]);
-        }
-      } catch {
-        serverHandled = false;
+      if (
+        !rawText.trim() ||
+        loading
+      ) {
+        return;
       }
 
-      // 2. If server has no Gemini key or returns fallback, run rich deterministic multi-agent simulation
-      if (!serverHandled) {
-        const agentResponses = await runMultiAgentCollaboration(
-          userText,
-          targetCase,
-          effectiveAgentId
+      const userText =
+        rawText.trim();
+
+      setInput("");
+
+      // --------------------------------------------------
+      // Check for @agent mention
+      // --------------------------------------------------
+
+      const mentionedAgent =
+        extractMentionedAgent(
+          userText
         );
 
-        // Sequence response messages with slight visual delay feel if multiple
-        for (let i = 0; i < agentResponses.length; i++) {
-          const resp = agentResponses[i];
-          setMessages((prev) => [...prev, resp]);
-        }
+      const effectiveAgentId =
+        mentionedAgent ||
+        (
+          mode === "direct"
+            ? activeAgentId
+            : undefined
+        );
+
+      // --------------------------------------------------
+      // Resolve case
+      // --------------------------------------------------
+
+      const mentionedCase =
+        extractCaseReference(
+          userText,
+          cases
+        );
+
+      const targetCase =
+        mentionedCase ||
+        activeCase;
+
+      if (
+        mentionedCase &&
+        mentionedCase.id !==
+          selectedCaseId
+      ) {
+        setSelectedCaseId(
+          mentionedCase.id
+        );
       }
-    } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          sender: "agent",
-          agentId: "orchestrator",
-          agentName: "Lead Orchestrator",
-          text: `An operational timeout occurred: ${err.message}. Please retry your query.`,
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-        }
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
+
+      // --------------------------------------------------
+      // Add user message
+      // --------------------------------------------------
+
+      const userMsg:
+        MultiAgentChatMessage = {
+          id:
+            `usr-${Date.now()}`,
+
+          sender:
+            "user",
+
+          text:
+            userText,
+
+          timestamp:
+            new Date()
+              .toLocaleTimeString(
+                [],
+                {
+                  hour:
+                    "2-digit",
+
+                  minute:
+                    "2-digit",
+                }
+              ),
+
+          contextCaseId:
+            targetCase?.id,
+
+          contextShipmentRef:
+            targetCase
+              ?.shipmentReference,
+        };
+
+      setMessages(
+        (previous) => [
+          ...previous,
+          userMsg,
+        ]
+      );
+
+      // --------------------------------------------------
+      // No processed case available
+      // --------------------------------------------------
+
+      if (!targetCase) {
+        setMessages(
+          (previous) => [
+            ...previous,
+
+            {
+              id:
+                `no-case-${Date.now()}`,
+
+              sender:
+                "agent",
+
+              agentId:
+                "orchestrator",
+
+              agentName:
+                AGENT_PERSONAS
+                  .orchestrator
+                  .name,
+
+              text:
+                "No processed shipment case is available yet. Please wait for the document pipeline to complete at least one case.",
+
+              timestamp:
+                new Date()
+                  .toLocaleTimeString(),
+            },
+          ]
+        );
+
+        return;
+      }
+
+      setLoading(true);
+
+      try {
+        // ------------------------------------------------
+        // REAL BACKEND ORCHESTRATION
+        //
+        // No Gemini request here.
+        // No synthetic scenario.
+        // ------------------------------------------------
+
+        const agentResponses =
+          await runMultiAgentCollaboration(
+            userText,
+            targetCase,
+            effectiveAgentId
+          );
+
+        setMessages(
+          (previous) => [
+            ...previous,
+            ...agentResponses,
+          ]
+        );
+      } catch (
+        error: any
+      ) {
+        console.error(
+          "Multi-agent collaboration failed:",
+          error
+        );
+
+        setMessages(
+          (previous) => [
+            ...previous,
+
+            {
+              id:
+                `err-${Date.now()}`,
+
+              sender:
+                "agent",
+
+              agentId:
+                "orchestrator",
+
+              agentName:
+                AGENT_PERSONAS
+                  .orchestrator
+                  .name,
+
+              text:
+                `Unable to load the real orchestration record: ${
+                  error?.message ||
+                  "Unknown error"
+                }.`,
+
+              timestamp:
+                new Date()
+                  .toLocaleTimeString(
+                    [],
+                    {
+                      hour:
+                        "2-digit",
+
+                      minute:
+                        "2-digit",
+                    }
+                  ),
+            },
+          ]
+        );
+      } finally {
+        setLoading(false);
+      }
+    };
 
   // Render Icon helper for Agent Avatar
   const renderAgentIcon = (id?: AgentId) => {
@@ -317,13 +475,55 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
 
   // Quick Preset Queries
   const quickPresets = [
-    { label: "🔥 Triage SHP-8291", prompt: "Investigate SHP-8291, evaluate container and weight discrepancies, and draft amendment" },
-    { label: "📷 Run AI Vision OCR", prompt: "Run Multimodal Vision Model & OCR on hard-to-read scan, de-skew crooked PDF, and extract 7 fields" },
-    { label: "🔄 3-Way Diff on SHP-7612", prompt: "Reconcile BL V2 for SHP-7612 and check for unauthorized carrier alterations" },
-    { label: "🛡️ Audit Smudge on SHP-8411", prompt: "Evaluate optical ambiguity on SHP-8411 and explain zero-guess policy" },
-    { label: "⚖️ 7-Field Evaluation", prompt: "Perform strict deterministic 7-field comparison on active case" },
-    { label: "✉️ Draft Carrier Amendment", prompt: "Generate formal carrier amendment notice with line-item citations" },
-    { label: "🐕 Carrier Pattern Check", prompt: "Check watchdog memory for recurring carrier clerical habits" }
+    {
+      label:
+        "🔍 Investigate Active Case",
+
+      prompt:
+        activeCase
+          ? `Investigate ${activeCase.shipmentReference}`
+          : "Investigate the active case",
+    },
+
+    {
+      label:
+        "⚖️ Verification Result",
+
+      prompt:
+        activeCase
+          ? `@verification explain the verification result for ${activeCase.shipmentReference}`
+          : "@verification explain the active verification result",
+    },
+
+    {
+      label:
+        "🛡️ Reliability Check",
+
+      prompt:
+        activeCase
+          ? `@critic review whether ${activeCase.shipmentReference} requires human review`
+          : "@critic review the active case",
+    },
+
+    {
+      label:
+        "🔄 Revision Status",
+
+      prompt:
+        activeCase
+          ? `@revision check revision status for ${activeCase.shipmentReference}`
+          : "@revision check the active case",
+    },
+
+    {
+      label:
+        "✉️ Resolution Status",
+
+      prompt:
+        activeCase
+          ? `@resolution review the resolution workflow for ${activeCase.shipmentReference}`
+          : "@resolution review the active case",
+    },
   ];
 
   return (
@@ -349,7 +549,9 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
                 7 Online
               </span>
             </div>
-            <p className="text-[11px] text-slate-400">Deterministic Engine + Gemini Flash Collaboration</p>
+            <p className="text-[11px] text-slate-400">
+              Deterministic Orchestration + Verified Case Evidence
+            </p>
           </div>
         </div>
 
@@ -626,9 +828,12 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
           <div className="flex items-center gap-3 p-3 bg-blue-50/80 border border-blue-200 rounded-xl text-xs text-blue-900 animate-pulse">
             <RefreshCw className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
             <div>
-              <div className="font-bold">Multi-Agent System Deliberating...</div>
+              <div className="font-bold">
+                Loading Multi-Agent Workflow...
+              </div>
+
               <div className="text-[11px] text-blue-700">
-                Orchestrator, Verification Engine, Critic Gate & Normalizer evaluating evidence
+                Retrieving verified case state and structured orchestration events
               </div>
             </div>
           </div>

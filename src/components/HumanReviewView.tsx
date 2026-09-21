@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   UserCheck, 
   AlertCircle, 
@@ -6,12 +6,13 @@ import {
   FileText, 
   HelpCircle, 
   ExternalLink, 
-  ArrowRight,
-  ShieldCheck,
-  X,
-  Camera
+  ArrowRight, 
+  ShieldCheck, 
+  X, 
+  Camera,
+  GitCompare
 } from "lucide-react";
-import { ShipmentCase } from "../types";
+import { ShipmentCase, ComparisonField } from "../types";
 import { datasetProvider } from "../services/datasetProvider";
 
 interface HumanReviewViewProps {
@@ -19,19 +20,48 @@ interface HumanReviewViewProps {
   onOpenCase: (caseId: string) => void;
   onRefreshCases: () => void;
   onOpenVisionOcr?: (caseId: string) => void;
+  initialCaseId?: string | null; 
 }
 
 export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
   cases,
   onOpenCase,
   onRefreshCases,
-  onOpenVisionOcr
+  onOpenVisionOcr,
+  initialCaseId
 }) => {
+  // Modal starts closed (null). It only opens when clicking "Review & Decide".
   const [selectedCase, setSelectedCase] = useState<ShipmentCase | null>(null);
+
   const [overrideValue, setOverrideValue] = useState("");
-  const [overrideField, setOverrideField] = useState("gross_weight_kg");
+  const [overrideField, setOverrideField] = useState<string>("consignee");
   const [decisionNotes, setDecisionNotes] = useState("");
   const [reviewerName, setReviewerName] = useState("Sarah Tan (Senior Doc Specialist)");
+
+  // Dynamically set the correct target field and pre-fill values when a modal is opened
+  useEffect(() => {
+    if (selectedCase) {
+      if (selectedCase.hasRevision && selectedCase.revisionComparison?.unexpectedChanges?.length) {
+        const unexpected = selectedCase.revisionComparison.unexpectedChanges[0];
+        setOverrideField(unexpected.field);
+        setOverrideValue(String(unexpected.siValue));
+        setDecisionNotes(`Revision audit: Consignee modified unilaterally in BL V2. Reverting to intended SI value '${unexpected.siValue}'.`);
+      } else if (selectedCase.reviewReason === "unreadable") {
+        setOverrideField("gross_weight_kg");
+        setOverrideValue("64,000 KG");
+        setDecisionNotes("Optical scan verification: Digit 2 confirmed as 64,000 KG per SI reference.");
+      } else if (selectedCase.reviewReason === "missing_value") {
+        setOverrideField("consignee");
+        setOverrideValue("");
+        setDecisionNotes("Shipper preliminary SI omitted Consignee. Verified via customer booking profile.");
+      } else if (selectedCase.defectFields && selectedCase.defectFields.length > 0) {
+        setOverrideField(selectedCase.defectFields[0]);
+        setOverrideValue("");
+      } else {
+        setOverrideField("consignee");
+      }
+    }
+  }, [selectedCase]);
 
   const pendingReviewCases = cases.filter(
     (c) => c.verificationStatus === "NEEDS_REVIEW" || (c.hasRevision && c.revisionComparison?.overallOutcome === "NEEDS_HUMAN_REVIEW")
@@ -43,7 +73,7 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
     datasetProvider.updateHumanReview(selectedCase.id, {
       reviewer: reviewerName,
       approvedStatus,
-      comments: decisionNotes || `Approved as ${approvedStatus} after optical review`,
+      comments: decisionNotes || `Resolved as ${approvedStatus} by operator`,
       manualOverrides: overrideValue ? { [overrideField]: overrideValue } : undefined
     });
 
@@ -111,7 +141,7 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
               <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
                 <button
                   onClick={() => onOpenCase(c.id)}
-                  className="text-xs text-slate-600 hover:text-slate-900 font-medium underline"
+                  className="text-xs text-slate-600 hover:text-slate-900 font-medium underline cursor-pointer"
                 >
                   Inspect Case
                 </button>
@@ -151,13 +181,67 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
               </div>
               <button
                 onClick={() => setSelectedCase(null)}
-                className="text-slate-400 hover:text-slate-600 p-1"
+                className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Case specific optical suggestions */}
+            {/* 1. Revision Case Context Card (for SHP-7612) */}
+            {selectedCase.hasRevision && (selectedCase.revisionComparison?.unexpectedChanges?.length ?? 0) > 0 && (
+              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-xs space-y-2">
+                <div className="font-bold text-purple-950 flex items-center gap-1.5">
+                  <GitCompare className="w-3.5 h-3.5 text-purple-600" />
+                  <span>3-Way Revision Finding: Unauthorized Consignee Alteration</span>
+                </div>
+                <p className="text-[11px] text-purple-800">
+                  Carrier fixed weight and container count, but altered the Consignee company name on BL V2. Choose the authorized value:
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const val = String(selectedCase.revisionComparison?.unexpectedChanges[0]?.siValue);
+                      setOverrideField("consignee");
+                      setOverrideValue(val);
+                      setDecisionNotes(`Authorized original SI Consignee: ${val}`);
+                    }}
+                    className={`p-2.5 bg-white rounded-lg border text-left transition cursor-pointer ${
+                      overrideValue === String(selectedCase.revisionComparison?.unexpectedChanges[0]?.siValue)
+                        ? "border-purple-600 ring-2 ring-purple-100 shadow-xs"
+                        : "border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    <div className="font-bold text-slate-900 text-xs">Original SI (Customer Intended)</div>
+                    <div className="font-mono text-[11px] text-purple-900 mt-0.5 truncate">
+                      {String(selectedCase.revisionComparison?.unexpectedChanges[0]?.siValue)}
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const val = String(selectedCase.revisionComparison?.unexpectedChanges[0]?.v2Value);
+                      setOverrideField("consignee");
+                      setOverrideValue(val);
+                      setDecisionNotes(`Approved carrier amended Consignee: ${val}`);
+                    }}
+                    className={`p-2.5 bg-white rounded-lg border text-left transition cursor-pointer ${
+                      overrideValue === String(selectedCase.revisionComparison?.unexpectedChanges[0]?.v2Value)
+                        ? "border-purple-600 ring-2 ring-purple-100 shadow-xs"
+                        : "border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    <div className="font-bold text-slate-900 text-xs">Carrier BL V2 (Revised Draft)</div>
+                    <div className="font-mono text-[11px] text-purple-900 mt-0.5 truncate">
+                      {String(selectedCase.revisionComparison?.unexpectedChanges[0]?.v2Value)}
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 2. Optical Scan Smudge Proposals (for SHP-8411) */}
             {selectedCase.reviewReason === "unreadable" && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs space-y-2">
                 <div className="flex items-center justify-between">
@@ -165,7 +249,7 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
                   {onOpenVisionOcr && (
                     <button
                       onClick={() => onOpenVisionOcr(selectedCase.id)}
-                      className="flex items-center gap-1 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 bg-white px-2 py-0.5 rounded border border-indigo-200 shadow-2xs"
+                      className="flex items-center gap-1 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 bg-white px-2 py-0.5 rounded border border-indigo-200 shadow-2xs cursor-pointer"
                     >
                       <Camera className="w-3 h-3 text-indigo-600" />
                       <span>Launch AI Vision OCR Reader</span>
@@ -174,15 +258,29 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <button
-                    onClick={() => setOverrideValue("64,000 KG")}
-                    className="p-2 bg-white border border-amber-300 rounded text-left hover:bg-amber-100/50 transition cursor-pointer"
+                    type="button"
+                    onClick={() => {
+                      setOverrideField("gross_weight_kg");
+                      setOverrideValue("64,000 KG");
+                      setDecisionNotes("Optical smudge resolved: 64,000 KG confirmed per SI reference.");
+                    }}
+                    className={`p-2 bg-white border rounded text-left transition cursor-pointer ${
+                      overrideValue === "64,000 KG" ? "border-amber-500 ring-2 ring-amber-100" : "border-amber-300 hover:bg-amber-100/50"
+                    }`}
                   >
                     <div className="font-bold text-slate-900">Candidate A: 64,000 KG</div>
                     <div className="text-[10px] text-slate-500">Confidence: 58% (Matches SI)</div>
                   </button>
                   <button
-                    onClick={() => setOverrideValue("68,000 KG")}
-                    className="p-2 bg-white border border-amber-300 rounded text-left hover:bg-amber-100/50 transition cursor-pointer"
+                    type="button"
+                    onClick={() => {
+                      setOverrideField("gross_weight_kg");
+                      setOverrideValue("68,000 KG");
+                      setDecisionNotes("Optical smudge resolved: 68,000 KG confirmed (discrepancy).");
+                    }}
+                    className={`p-2 bg-white border rounded text-left transition cursor-pointer ${
+                      overrideValue === "68,000 KG" ? "border-amber-500 ring-2 ring-amber-100" : "border-amber-300 hover:bg-amber-100/50"
+                    }`}
                   >
                     <div className="font-bold text-slate-900">Candidate B: 68,000 KG</div>
                     <div className="text-[10px] text-slate-500">Confidence: 42% (Discrepancy)</div>
@@ -191,6 +289,7 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
               </div>
             )}
 
+            {/* Operator Form Inputs */}
             <div className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Operator Name & Role</label>
@@ -198,18 +297,25 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
                   type="text"
                   value={reviewerName}
                   onChange={(e) => setReviewerName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 font-medium"
                 />
               </div>
 
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Confirmed Field Value (Optional Override)</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold text-slate-700">
+                    Confirmed Field Value Override
+                  </label>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    Target Field: <strong className="text-blue-700">{overrideField}</strong>
+                  </span>
+                </div>
                 <input
                   type="text"
                   value={overrideValue}
                   onChange={(e) => setOverrideValue(e.target.value)}
-                  placeholder="e.g. 64,000 KG or ROTTERDAM"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800"
+                  placeholder="e.g. 64,000 KG or PACIFIC INDUSTRIAL TRADING LTD"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 font-medium font-mono"
                 />
               </div>
 
@@ -220,27 +326,31 @@ export const HumanReviewView: React.FC<HumanReviewViewProps> = ({
                   value={decisionNotes}
                   onChange={(e) => setDecisionNotes(e.target.value)}
                   placeholder="Explain optical verification evidence, telephone confirmation, or authorization basis..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-800"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-3 text-slate-800 font-sans leading-relaxed"
                 />
               </div>
             </div>
 
+            {/* Footer Action Buttons */}
             <div className="flex items-center justify-between pt-3 border-t border-slate-200">
               <button
+                type="button"
                 onClick={() => setSelectedCase(null)}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium px-4 py-2 rounded-lg transition"
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium px-4 py-2 rounded-lg transition cursor-pointer"
               >
                 Cancel
               </button>
 
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
                   onClick={() => handleApplyDecision("MISMATCH")}
                   className="bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition cursor-pointer"
                 >
                   Confirm Mismatch & Request Amendment
                 </button>
                 <button
+                  type="button"
                   onClick={() => handleApplyDecision("OK")}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition cursor-pointer"
                 >

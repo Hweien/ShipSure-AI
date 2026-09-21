@@ -40,12 +40,19 @@ export const CopilotPanel: React.FC<CopilotPanelProps> = ({
   activeCase,
   onExecuteAction
 }) => {
+
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 18) return "Good afternoon";
+    return "Good evening";
+  };
   const [messages, setMessages] = useState<CopilotMessage[]>([
     {
       id: "init-1",
       sender: "copilot",
       agentName: "ShipSure Copilot (Orchestrator)",
-      text: "Good morning! I am monitoring shipping operations. How can I assist you with today's inbox or discrepancy investigations?",
+      text: `${getGreeting()}! I am monitoring shipping operations. How can I assist you with today's inbox or discrepancy investigations?`,
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       suggestedActions: [
         { label: "Give me an operational briefing", actionId: "BRIEFING" },

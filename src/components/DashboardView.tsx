@@ -32,16 +32,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [briefingGenerating, setBriefingGenerating] = useState(false);
   const [customBriefing, setCustomBriefing] = useState<string | null>(null);
 
-  // Filter cases based on current date filter if necessary (all synthetic demo data is anchored on current operational dates)
-  const totalEmails = cases.length;
-  const verifiedDocs = cases.filter((c) => c.category === "BL_COMPARISON").length;
-  const mismatches = cases.filter((c) => c.verificationStatus === "MISMATCH").length;
-  const humanReviews = cases.filter((c) => c.verificationStatus === "NEEDS_REVIEW").length;
-  const autoVerified = cases.filter((c) => c.verificationStatus === "OK").length;
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 18) return "Good afternoon";
+    return "Good evening";
+  };
+ // Filter cases based on the selected date filter
+  const filteredCases = cases.filter((c) => {
+    if (dateFilter.preset === "TODAY") {
+      return c.receivedDate.startsWith("2026-09-19");
+    } else if (dateFilter.preset === "YESTERDAY") {
+      return c.receivedDate.startsWith("2026-09-18");
+    } else if (dateFilter.preset === "LAST_7_DAYS" || dateFilter.preset === "THIS_MONTH") {
+      return true; // includes all 12 demo emails
+    }
+    return true;
+  });
+
+  const totalEmails = filteredCases.length;
+  const verifiedDocs = filteredCases.filter((c) => c.category === "BL_COMPARISON").length;
+  const mismatches = filteredCases.filter((c) => c.verificationStatus === "MISMATCH").length;
+  const humanReviews = filteredCases.filter((c) => c.verificationStatus === "NEEDS_REVIEW").length;
+  const autoVerified = filteredCases.filter((c) => c.verificationStatus === "OK").length;
   const autoRate = verifiedDocs > 0 ? Math.round((autoVerified / verifiedDocs) * 100) : 0;
 
   // High priority cases needing attention
-  const attentionCases = cases
+  const attentionCases = filteredCases
     .filter((c) => c.verificationStatus === "MISMATCH" || c.verificationStatus === "NEEDS_REVIEW" || c.hasRevision)
     .sort((a, b) => b.priorityScore - a.priorityScore)
     .slice(0, 4);
@@ -50,10 +67,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setBriefingGenerating(true);
     setTimeout(() => {
       setBriefingGenerating(false);
+      const topMismatch = attentionCases.find(c => c.verificationStatus === "MISMATCH");
+      const topReview = attentionCases.find(c => c.verificationStatus === "NEEDS_REVIEW" || c.hasRevision);
+      
       setCustomBriefing(
-        `Operational Briefing for ${dateFilter.preset}: Today our multi-agent pipeline processed ${totalEmails} incoming messages. ${verifiedDocs} document-check requests were evaluated. We caught ${mismatches} genuine carrier discrepancies before draft BL finalization. ${humanReviews} uncertain cases were escalated to Human Review without guessing. Priority focus: SHP-8291 container/weight defect and SHP-7612 unexpected consignee revision.`
+        `Operational Briefing: Evaluated ${verifiedDocs} document sets. Identified ${mismatches} carrier discrepancies and ${humanReviews} cases requiring human review. ` +
+        (topMismatch ? `Priority focus: ${topMismatch.shipmentReference}. ` : "All discrepancies handled. ") +
+        (topReview ? `Review pending on ${topReview.shipmentReference}.` : "Review queue clear.")
       );
-    }, 600);
+    }, 400);
   };
 
   return (
@@ -62,7 +84,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-            Good morning, Operations Lead
+            {getGreeting()}, Operations Lead
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Here is your live shipping document verification overview for <span className="font-semibold text-slate-700">{dateFilter.preset.replace(/_/g, " ")}</span>.

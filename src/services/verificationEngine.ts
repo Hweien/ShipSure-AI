@@ -109,7 +109,7 @@ export function verifyDocuments(
           ? {
               documentType: "SI",
               originalValue: String(siField.raw || ""),
-              normalizedValue: siField.normalized,
+              normalizedValue: siField.normalized ?? "",
               snippet: siField.snippet,
               confidence: "LOW"
             }
@@ -118,7 +118,7 @@ export function verifyDocuments(
           ? {
               documentType: "BL",
               originalValue: String(blField.raw || ""),
-              normalizedValue: blField.normalized,
+              normalizedValue: blField.normalized ?? "",
               snippet: blField.snippet,
               confidence: "LOW"
             }
@@ -139,7 +139,7 @@ export function verifyDocuments(
           ? {
               documentType: "SI",
               originalValue: String(siField.raw || ""),
-              normalizedValue: siField.normalized,
+              normalizedValue: siField.normalized ?? "",
               snippet: siField.snippet,
               confidence: "MEDIUM"
             }
@@ -148,7 +148,7 @@ export function verifyDocuments(
           ? {
               documentType: "BL",
               originalValue: String(blField.raw || ""),
-              normalizedValue: blField.normalized,
+              normalizedValue: blField.normalized ?? "",
               snippet: blField.snippet,
               confidence: "MEDIUM"
             }
@@ -209,7 +209,7 @@ export function verifyDocuments(
       blEvidence: {
         documentType: "BL",
         originalValue: String(blField.raw),
-        normalizedValue: blField.normalized,
+        normalizedValue: blField.normalized ?? "",
         snippet: blField.snippet,
         confidence: "HIGH"
       },
