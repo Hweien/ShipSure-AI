@@ -34,9 +34,37 @@ export const InboxView: React.FC<InboxViewProps> = ({
   const [selectedAttachmentText, setSelectedAttachmentText] = useState<{ path: string; text: string } | null>(null);
 
   // Link cases to emails
+  const getShipmentReference = (
+    email: EmailRecord,
+    relatedCase?: ShipmentCase
+  ): string | null => {
+    // First preference: authoritative case reference
+    if (
+      relatedCase?.shipmentReference &&
+      relatedCase.shipmentReference !== "0"
+    ) {
+      return relatedCase.shipmentReference;
+    }
+
+    // Fallback: extract the operational reference from the email
+    const emailText = `${email.subject}\n${email.body}`;
+
+    const match = emailText.match(
+      /\b(?:OC\s*)?([A-Z0-9]{3,}-[A-Z0-9]{3,})\b/i
+    );
+
+    return match ? match[1] : null;
+  };
+
   const filteredEmails = emails.filter((e) => {
-    const relatedCase = cases.find((c) => c.emailId === e.email_id);
+    const relatedCase = cases.find(
+      (c) =>
+        String(c.emailId).trim() ===
+        String(e.email_id).trim()
+    );
+
     const category = relatedCase ? relatedCase.category : "GENERAL";
+    const shipmentReference = getShipmentReference(e, relatedCase);
 
     if (selectedCategory !== "ALL" && category !== selectedCategory) {
       return false;
@@ -47,7 +75,10 @@ export const InboxView: React.FC<InboxViewProps> = ({
       const matchSubject = e.subject.toLowerCase().includes(term);
       const matchFrom = (e.from || e.sender || "").toLowerCase().includes(term);
       const matchBody = e.body.toLowerCase().includes(term);
-      const matchRef = relatedCase?.shipmentReference.toLowerCase().includes(term);
+      const matchRef = shipmentReference
+        ? shipmentReference.toLowerCase().includes(term)
+        : false;
+
       return matchSubject || matchFrom || matchBody || matchRef;
     }
 
@@ -69,9 +100,13 @@ export const InboxView: React.FC<InboxViewProps> = ({
     }
   };
 
-  const openAttachment = (path: string) => {
-    const text = datasetProvider.getAttachmentText(path);
-    setSelectedAttachmentText({ path, text });
+  const openAttachment = async (path: string) => {
+    const text = await datasetProvider.getAttachmentText(path);
+
+    setSelectedAttachmentText({
+      path,
+      text
+    });
   };
 
   return (
@@ -148,7 +183,17 @@ export const InboxView: React.FC<InboxViewProps> = ({
           </thead>
           <tbody className="divide-y divide-slate-100">
             {filteredEmails.map((e) => {
-              const relatedCase = cases.find((c) => c.emailId === e.email_id);
+              const relatedCase = cases.find(
+                (c) =>
+                  String(c.emailId).trim() ===
+                  String(e.email_id).trim()
+              );
+
+              const shipmentReference = getShipmentReference(
+                e,
+                relatedCase
+              );
+
               const category = relatedCase ? relatedCase.category : "GENERAL";
               const priority = relatedCase ? relatedCase.priorityScore : 10;
 
@@ -162,9 +207,9 @@ export const InboxView: React.FC<InboxViewProps> = ({
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-slate-900 truncate">{e.subject}</span>
                     </div>
-                    {relatedCase && (
+                    {shipmentReference && (
                       <div className="text-[11px] text-blue-600 font-medium mt-0.5">
-                        Ref: {relatedCase.shipmentReference}
+                        Ref: {shipmentReference}
                       </div>
                     )}
                   </td>

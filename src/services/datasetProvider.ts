@@ -36,9 +36,11 @@ class DatasetService {
 
   public setConfig(mode: DataSourceMode, pathOrUrl?: string) {
     this.mode = mode;
+
     if (mode === "LOCAL" && pathOrUrl) {
       this.localPath = pathOrUrl;
     }
+
     if (mode === "DOCKER" && pathOrUrl) {
       this.dockerUrl = pathOrUrl;
     }
@@ -57,19 +59,120 @@ class DatasetService {
   }
 
   public getCaseById(id: string): ShipmentCase | undefined {
-    return this.cases.find((c) => c.id === id || c.emailId === id || c.shipmentReference === id);
+    return this.cases.find(
+      (c) =>
+        c.id === id ||
+        c.emailId === id ||
+        c.shipmentReference === id
+    );
   }
 
-  public getAttachmentText(path: string): string {
-    const demo = SYNTHETIC_DEMO_CASES.find(
-      (d) => d.email.attachments.includes(path) || path.includes(d.email.email_id)
-    );
-    if (!demo) return `Attachment content for ${path}\n[No raw preview available]`;
+  /**
+   * Get attachment content.
+   *
+   * DEMO:
+   *   Uses the synthetic attachment text already stored locally.
+   *
+   * DOCKER / LOCAL:
+   *   Real attachments are loaded through the backend API.
+   *
+   *   TXT files are returned directly from:
+   *     GET /api/dataset/attachment
+   *
+   *   Other supported document types are read through:
+   *     POST /api/ds1/read-document
+   */
+  public async getAttachmentText(path: string): Promise<string> {
+    // ------------------------------------------------------------
+    // DEMO mode
+    // ------------------------------------------------------------
+    if (this.mode === "DEMO") {
+      const demo = SYNTHETIC_DEMO_CASES.find(
+        (d) =>
+          d.email.attachments.includes(path) ||
+          path.includes(d.email.email_id)
+      );
 
-    if (path.includes("SI") && demo.siText) return demo.siText;
-    if (path.includes("V2") && demo.blV2Text) return demo.blV2Text;
-    if (path.includes("BL") && demo.blText) return demo.blText;
-    return `[Raw attachment text for ${path}]`;
+      if (!demo) {
+        return `Attachment content for ${path}\n[No raw preview available]`;
+      }
+
+      if (path.includes("SI") && demo.siText) {
+        return demo.siText;
+      }
+
+      if (path.includes("V2") && demo.blV2Text) {
+        return demo.blV2Text;
+      }
+
+      if (path.includes("BL") && demo.blText) {
+        return demo.blText;
+      }
+
+      return `[Raw attachment text for ${path}]`;
+    }
+
+    // ------------------------------------------------------------
+    // LOCAL / DOCKER mode
+    // ------------------------------------------------------------
+
+    const extension =
+      path.split(".").pop()?.toLowerCase();
+
+    // ------------------------------------------------------------
+    // TXT
+    //
+    // The backend already exposes:
+    // GET /api/dataset/attachment?path=...
+    //
+    // This returns the actual raw .txt file from Docker/LOCAL.
+    // ------------------------------------------------------------
+    if (extension === "txt") {
+      const response = await fetch(
+        `/api/dataset/attachment?path=${encodeURIComponent(path)}`
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        throw new Error(
+          `Attachment request failed: HTTP ${response.status} ${errorText}`
+        );
+      }
+
+      return await response.text();
+    }
+
+    // ------------------------------------------------------------
+    // Other document types
+    //
+    // Use the backend document reader because it already handles:
+    // XLSX, PDF, DOCX and image files.
+    // ------------------------------------------------------------
+    const response = await fetch(
+      "/api/ds1/read-document",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          path
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      throw new Error(
+        `Document reader failed: HTTP ${response.status} ${errorText}`
+      );
+    }
+
+    const data = await response.json();
+
+    return data.content || "";
   }
 
   /**
@@ -84,10 +187,14 @@ class DatasetService {
       manualOverrides?: Record<string, any>;
     }
   ): ShipmentCase | null {
-    const targetCase = this.cases.find((c) => c.id === caseId);
+    const targetCase = this.cases.find(
+      (c) => c.id === caseId
+    );
+
     if (!targetCase) return null;
 
     targetCase.humanReviewed = true;
+
     targetCase.humanReviewDecision = {
       reviewer: decision.reviewer,
       timestamp: new Date().toISOString(),
@@ -95,21 +202,42 @@ class DatasetService {
       comments: decision.comments,
       manualOverrides: decision.manualOverrides
     };
-    targetCase.verificationStatus = decision.approvedStatus;
+
+    targetCase.verificationStatus =
+      decision.approvedStatus;
 
     if (decision.manualOverrides) {
-      Object.entries(decision.manualOverrides).forEach(([fieldKey, overrideVal]) => {
-        const fieldComp = targetCase.fieldComparisons.find((f) => f.field === fieldKey);
-        if (fieldComp) {
-          fieldComp.status = decision.approvedStatus === "OK" ? "EXACT_MATCH" : "MISMATCH";
-          if (fieldComp.blEvidence) {
-            fieldComp.blEvidence.originalValue = String(overrideVal);
-            fieldComp.blEvidence.normalizedValue = overrideVal;
-            fieldComp.blEvidence.confidence = "HIGH";
+      Object.entries(
+        decision.manualOverrides
+      ).forEach(
+        ([fieldKey, overrideVal]) => {
+          const fieldComp =
+            targetCase.fieldComparisons.find(
+              (f) => f.field === fieldKey
+            );
+
+          if (fieldComp) {
+            fieldComp.status =
+              decision.approvedStatus === "OK"
+                ? "EXACT_MATCH"
+                : "MISMATCH";
+
+            if (fieldComp.blEvidence) {
+              fieldComp.blEvidence.originalValue =
+                String(overrideVal);
+
+              fieldComp.blEvidence.normalizedValue =
+                overrideVal;
+
+              fieldComp.blEvidence.confidence =
+                "HIGH";
+            }
+
+            fieldComp.notes =
+              `Human verified by ${decision.reviewer}: "${decision.comments}"`;
           }
-          fieldComp.notes = `Human verified by ${decision.reviewer}: "${decision.comments}"`;
         }
-      });
+      );
     }
 
     if (decision.approvedStatus === "OK") {
@@ -120,7 +248,8 @@ class DatasetService {
 
     // FIX: Mark revision outcome as RESOLVED so it leaves the review queue
     if (targetCase.revisionComparison) {
-      targetCase.revisionComparison.overallOutcome = "RESOLVED";
+      targetCase.revisionComparison.overallOutcome =
+        "RESOLVED";
     }
 
     targetCase.timeline.unshift({
@@ -142,7 +271,11 @@ class DatasetService {
     const submission: SubmissionJson = {};
 
     for (const email of this.emails) {
-      const c = this.cases.find((item) => item.emailId === email.email_id);
+      const c = this.cases.find(
+        (item) =>
+          item.emailId === email.email_id
+      );
+
       if (!c) {
         submission[email.email_id] = {
           category: "GENERAL",
@@ -173,7 +306,8 @@ class DatasetService {
    * Submit to Docker / HTTP scoring endpoint if available
    */
   public async submitToScoringServer(): Promise<ScoreboardResult> {
-    const submission = this.generateSubmissionJson();
+    const submission =
+      this.generateSubmissionJson();
 
     if (this.mode !== "DOCKER") {
       // Return simulated local scoreboard validation
@@ -183,20 +317,34 @@ class DatasetService {
         stage3_defect_f1: 0.965,
         end_to_end_accuracy: 0.941,
         reliability_score: 1.0,
-        total_emails: Object.keys(submission).length,
-        message: "Validated locally against SDOC schema specifications (Synthetic Demo Mode)"
+        total_emails:
+          Object.keys(submission).length,
+        message:
+          "Validated locally against SDOC schema specifications (Synthetic Demo Mode)"
       };
     }
 
     try {
-      const res = await fetch("/api/evaluation/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dockerUrl: this.dockerUrl, submission })
-      });
+      const res = await fetch(
+        "/api/evaluation/submit",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            dockerUrl: this.dockerUrl,
+            submission
+          })
+        }
+      );
+
       if (!res.ok) {
-        throw new Error(`Scoring server responded with HTTP ${res.status}`);
+        throw new Error(
+          `Scoring server responded with HTTP ${res.status}`
+        );
       }
+
       return await res.json();
     } catch (err: any) {
       return {
@@ -214,7 +362,10 @@ class DatasetService {
 
     // LOCAL / DOCKER mode:
     // Load both raw inbox emails and processed shipment cases
-    const [emailResponse, caseResponse] = await Promise.all([
+    const [
+      emailResponse,
+      caseResponse
+    ] = await Promise.all([
       fetch("/api/dataset/emails"),
       fetch("/api/cases")
     ]);
@@ -225,15 +376,19 @@ class DatasetService {
       );
     }
 
-    this.emails = await emailResponse.json();
+    this.emails =
+      await emailResponse.json();
 
-    // Cases may still be empty before DS1/DS2 process the emails.
+    // Cases may still be empty before DS1/DS2
+    // process the emails.
     if (caseResponse.ok) {
-      this.cases = await caseResponse.json();
+      this.cases =
+        await caseResponse.json();
     } else {
       this.cases = [];
     }
   }
 }
 
-export const datasetProvider = new DatasetService();
+export const datasetProvider =
+  new DatasetService();
