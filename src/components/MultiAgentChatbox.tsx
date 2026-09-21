@@ -120,13 +120,28 @@ export const MultiAgentChatbox: React.FC<MultiAgentChatboxProps> = ({
       sender: "agent",
       agentId: "orchestrator",
       agentName: AGENT_PERSONAS.orchestrator.name,
-      text: `👋 **ShipSure Multi-Agent Operations War Room is Live**.\n\n7 specialized autonomous agents are collaborating on today's shipping documentation pipeline. You can ask for collaborative case investigations, forensic 3-way version reconciliation, zero-guess reliability checks, or carrier amendment drafts.`,
+      text:
+      `👋 **ShipSure Multi-Agent Operations War Room is Live**.\n\n` +
+      `Specialized agents can investigate real shipment cases, explain SI-to-BL verification results, review missing or unreadable evidence, coordinate human review, and prepare discrepancy-resolution workflows.\n\n` +
+      `Version Intelligence is available as an experimental future extension when revised BL data exists.`,
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       suggestedActions: [
-        { label: "🔥 Triage Priority Case SHP-8291", actionId: "INVESTIGATE_CASE", payload: "CASE-8291" },
-        { label: "🔄 Reconcile BL V2 (SHP-7612)", actionId: "INVESTIGATE_CASE", payload: "CASE-7612" },
-        { label: "🛡️ Audit Optical Smudge (SHP-8411)", actionId: "INVESTIGATE_CASE", payload: "CASE-8411" }
-      ]
+        {
+          label:
+            "View Shipments",
+
+          actionId:
+            "NAVIGATE_SHIPMENTS",
+        },
+
+        {
+          label:
+            "Open Human Review",
+
+          actionId:
+            "NAVIGATE_HUMAN_REVIEW",
+        },
+      ],
     }
   ]);
 
@@ -178,7 +193,19 @@ const handleActionClick = (actionId: string, payload?: any) => {
     const targetCase = cases.find((c) => c.id === payload);
     handleSendMessage(`Investigate case ${targetCase?.shipmentReference || payload} in depth and prepare required carrier actions`);
   } else if (actionId === "NAVIGATE_REVISION") {
-    onNavigateToRevision(selectedCaseId);
+    const caseId =
+      payload ||
+      selectedCaseId;
+
+    if (caseId) {
+      setSelectedCaseId(
+        caseId
+      );
+
+      onNavigateToRevision(
+        caseId
+      );
+    }
   } else if (actionId === "NAVIGATE_HUMAN_REVIEW" || actionId === "OPEN_HUMAN_QUEUE") {
     onNavigateToHumanReview();
   } else if (actionId === "NAVIGATE_WATCHDOG") {

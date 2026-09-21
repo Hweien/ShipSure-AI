@@ -246,7 +246,7 @@ export const ShipmentsView: React.FC<ShipmentsViewProps> = ({
                         className="text-xs bg-purple-50 text-purple-700 hover:bg-purple-100 font-semibold px-2 py-1 rounded transition border border-purple-200 flex items-center gap-1"
                       >
                         <GitCompare className="w-3 h-3" />
-                        <span>Diff V1/V2</span>
+                        <span>Version Diff</span>
                       </button>
                     )}
                     <button

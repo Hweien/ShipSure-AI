@@ -177,12 +177,12 @@ export const AGENT_PERSONAS:
     revision: {
       id: "revision",
       name:
-        "Revision Intelligence Agent",
+        "Version Intelligence Agent",
 
       roleTitle:
-        "SI vs BL V1 vs BL V2 Reconciliation",
+        "Experimental Document Version Reconciliation",
 
-      badge: "Revision",
+      badge: "Future Extension",
 
       color: {
         bg: "bg-indigo-50",
@@ -194,7 +194,7 @@ export const AGENT_PERSONAS:
       },
 
       description:
-        "Reviews three-way revision comparison results when a revised BL is available.",
+        "Experimental extension for comparing a revised BL against the original SI and previous BL version. This capability is not used in the official SDOC evaluation.",
 
       avatarIcon: "GitCompare",
 
@@ -589,7 +589,7 @@ function buildActions(
   if (caseObj.hasRevision) {
     actions.push({
       label:
-        "Open Revision Intelligence",
+        "View Version Intelligence",
       actionId:
         "NAVIGATE_REVISION",
       payload:
@@ -784,13 +784,14 @@ function directAgentResponse(
       case "revision":
         text =
           caseObj.hasRevision
-            ? `Revision intelligence is available. Outcome: ${
+            ? `Version Intelligence is available for ${caseObj.shipmentReference}. Revision outcome: ${
                 caseObj
                   .revisionComparison
                   ?.overallOutcome ||
                 "revision recorded"
               }.`
-            : "No revised BL has been linked to this case.";
+            : `Version Intelligence is a future extension. No revised BL is linked to ${caseObj.shipmentReference}; the current official workflow uses SI-to-BL verification only.`;
+
         break;
 
       case "resolution":

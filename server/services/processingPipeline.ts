@@ -19,6 +19,11 @@ type PostJson = <T>(
   body: unknown
 ) => Promise<T>;
 
+const REVISION_INTELLIGENCE_ENABLED =
+  process.env
+    .ENABLE_REVISION_INTELLIGENCE ===
+  "true";
+
 function extractShipmentReference(
   email: EmailRecord
 ): string | null {
@@ -355,7 +360,9 @@ export async function processEmailPipeline(
   // REVISION PATH
   // Existing shipment + previous SI/BL + incoming BL
   // ---------------------------------------------------------
-  if (isRevisionCandidate &&
+  if (
+    REVISION_INTELLIGENCE_ENABLED &&
+    isRevisionCandidate &&
     existingCase &&
     existingCase.siData &&
     existingCase.blData

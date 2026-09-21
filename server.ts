@@ -39,6 +39,9 @@ const PORT = Number(process.env.PORT || 3000);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 15000);
 
+const REVISION_INTELLIGENCE_ENABLED =
+  process.env.ENABLE_REVISION_INTELLIGENCE === "true";
+
 // 50 MB is needed for base64 image/PDF payloads used by Vision OCR.
 app.use(express.json({ limit: "50mb" }));
 
@@ -2161,7 +2164,18 @@ app.get("/api/orchestration/events", async (req, res) => {
 });
 
 app.post("/api/revision/compare", (req, res) => {
-  try {
+    try {
+      if (
+        !REVISION_INTELLIGENCE_ENABLED
+      ) {
+        return res
+          .status(409)
+          .json({
+            error:
+              "Version Intelligence is an experimental future-work feature and is currently disabled.",
+          });
+      }
+      
     const { caseId, si, blV1, blV2 } = req.body || {};
     if (!caseId || !si || !blV1 || !blV2) {
       return res.status(400).json({

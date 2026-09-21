@@ -3,6 +3,7 @@ import {
   ArrowLeft, 
   CheckCircle2, 
   AlertTriangle, 
+  GitCompare,
   UserCheck, 
   Sparkles, 
   Bot, 
@@ -15,6 +16,7 @@ import {
   Camera
 } from "lucide-react";
 import { ComparisonField, ShipmentCase, SingleFieldComparison } from "../types";
+import { RevisionPanel } from "./RevisionPanel";
 
 interface VerificationViewProps {
   shipmentCase: ShipmentCase;
@@ -404,6 +406,54 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
           </tbody>
         </table>
       </div>
+
+      {/* ===================================================== */}
+      {/* VERSION INTELLIGENCE — FUTURE EXTENSION */}
+      {/* ===================================================== */}
+
+      {shipmentCase.category ===
+        "BL_COMPARISON" && (
+        <>
+          {shipmentCase.hasRevision &&
+          shipmentCase.revisionComparison ? (
+            <RevisionPanel
+              shipmentCase={
+                shipmentCase
+              }
+              onNavigateToHumanReview={
+                onSendToHumanReview
+              }
+            />
+          ) : (
+            <div className="bg-indigo-50/40 border border-dashed border-indigo-200 rounded-xl px-4 py-3">
+
+              <div className="flex items-center gap-2">
+
+                <GitCompare className="w-4 h-4 text-indigo-600" />
+
+                <span className="text-xs font-bold text-slate-900">
+                  Version Intelligence
+                </span>
+
+                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 border border-indigo-200">
+                  FUTURE EXTENSION
+                </span>
+
+              </div>
+
+              <p className="text-[11px] text-slate-500 mt-1.5">
+
+                No revised BL is linked to this shipment.
+                ShipSure is designed to support future
+                SI ↔ BL V1 ↔ BL V2 re-verification when
+                a revised document becomes available.
+
+              </p>
+
+            </div>
+          )}
+        </>
+      )}
 
       {/* Evidence Drawer / Modal */}
       {activeEvidence && (

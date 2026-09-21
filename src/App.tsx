@@ -11,7 +11,6 @@ import { InboxView } from "./components/InboxView";
 import { ShipmentsView } from "./components/ShipmentsView";
 import { VerificationView } from "./components/VerificationView";
 import { HumanReviewView } from "./components/HumanReviewView";
-import { RevisionView } from "./components/RevisionView";
 import { WatchdogView } from "./components/WatchdogView";
 import { AnalyticsView } from "./components/AnalyticsView";
 import { AgentActivityView } from "./components/AgentActivityView";
@@ -357,7 +356,7 @@ export default function App() {
                 onSelectCase={handleOpenCase}
                 onOpenRevision={(caseId) => {
                   setSelectedCaseId(caseId);
-                  setActiveTab("revision");
+                  setActiveTab("verification");
                 }}
                 initialFilterField={initialFilterField}
               />
@@ -384,17 +383,6 @@ export default function App() {
                 onOpenVisionOcr={(caseId) => {
                   if (caseId) setSelectedCaseId(caseId);
                   setVisionOcrOpen(true);
-                }}
-              />
-            )}
-
-            {activeTab === "revision" && (
-              <RevisionView
-                cases={filteredCases}
-                onOpenCase={handleOpenCase}
-                onNavigateToHumanReview={(caseId) => {
-                  setSelectedCaseId(caseId);
-                  setActiveTab("human-review");
                 }}
               />
             )}
@@ -456,7 +444,7 @@ export default function App() {
             }}
             onNavigateToRevision={(caseId) => {
               if (caseId) setSelectedCaseId(caseId);
-              setActiveTab("revision");
+              setActiveTab("verification");
             }}
             onNavigateToHumanReview={() => setActiveTab("human-review")}
             onNavigateToWatchdog={() => setActiveTab("watchdog")}
