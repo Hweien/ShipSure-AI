@@ -11,6 +11,15 @@ class CaseRepository {
     return this.cases.get(id);
   }
 
+  getByShipmentReference(
+    shipmentReference: string
+  ): ShipmentCase | undefined {
+    return Array.from(this.cases.values()).find(
+      (shipmentCase) =>
+        shipmentCase.shipmentReference === shipmentReference
+    );
+  }
+
   save(shipmentCase: ShipmentCase): ShipmentCase {
     this.cases.set(shipmentCase.id, shipmentCase);
     return shipmentCase;

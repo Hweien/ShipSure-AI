@@ -14,6 +14,21 @@ import { orchestrateCase } from "./server/services/orchestrator";
 import { JsonAuditRepository } from "./server/services/auditRepository";
 import { caseRepository } from "./server/services/caseRepository";
 import { processEmailPipeline } from "./server/services/processingPipeline";
+import {
+  verifyDocuments,
+} from "./src/services/verificationEngine";
+
+import {
+  normalizeContainerCount,
+  normalizeEntityName,
+  normalizeGrossWeight,
+  normalizePort,
+} from "./src/services/normalization";
+
+import type {
+  ComparisonField,
+  ExtractedDocumentFields,
+} from "./src/types";
 import { compareDocuments } from "./src/services/comparison/comparisonService";
 
 dotenv.config();
@@ -70,6 +85,13 @@ const PROCESSED_CACHE_FILE =
   path.join(
     RUNTIME_DIR,
     "processed-email-cases.json"
+  );
+
+const BASELINE_CACHE_FILE =
+  path.resolve(
+    process.cwd(),
+    "data",
+    "baseline-processed-email-cases.json"
   );
 
 const EXISTING_CASES_FILE =
@@ -313,38 +335,28 @@ async function loadProcessedState() {
     }
   );
 
-  // ----------------------------------
-  // Load permanent processed cache
-  // ----------------------------------
+  let baselineCache: ProcessedEmailCache = {};
+  let runtimeCache: ProcessedEmailCache = {};
+
+  // ==================================================
+  // 1. Load shared team baseline FIRST
+  // ==================================================
   try {
     const content =
       await fs.readFile(
-        PROCESSED_CACHE_FILE,
+        BASELINE_CACHE_FILE,
         "utf8"
       );
 
-    processedEmailCache =
+    baselineCache =
       JSON.parse(content);
 
-    for (
-      const entry of
-      Object.values(
-        processedEmailCache
-      )
-    ) {
-      if (entry?.case) {
-        caseRepository.save(
-          entry.case
-        );
-      }
-    }
-
     console.log(
-      `[Pipeline Cache] Loaded ${
+      `[Pipeline Cache] Loaded team baseline: ${
         Object.keys(
-          processedEmailCache
+          baselineCache
         ).length
-      } cached emails`
+      } emails`
     );
   } catch (error: any) {
     if (
@@ -352,63 +364,165 @@ async function loadProcessedState() {
       "ENOENT"
     ) {
       console.error(
-        "[Pipeline Cache] Failed to load cache:",
+        "[Pipeline Cache] Failed to load baseline:",
         error
+      );
+    } else {
+      console.log(
+        "[Pipeline Cache] No team baseline found"
       );
     }
   }
 
-  // ----------------------------------
-  // One-time recovery of cases from
-  // your current run
-  // ----------------------------------
+  // ==================================================
+  // 2. Load this laptop's runtime cache
+  //    Runtime can contain newer emails
+  // ==================================================
   try {
     const content =
       await fs.readFile(
-        EXISTING_CASES_FILE,
+        PROCESSED_CACHE_FILE,
         "utf8"
       );
 
-    const existingCases =
+    runtimeCache =
       JSON.parse(content);
 
-    if (
-      Array.isArray(
-        existingCases
-      )
-    ) {
-      for (
-        const shipmentCase of
-        existingCases
-      ) {
-        if (
-          shipmentCase?.id &&
-          shipmentCase?.emailId &&
-          !processedEmailCache[
-            shipmentCase.emailId
-          ]
-        ) {
-          caseRepository.save(
-            shipmentCase
-          );
-        }
-      }
-
-      console.log(
-        `[Pipeline Cache] Restored ${existingCases.length} existing cases`
-      );
-    }
+    console.log(
+      `[Pipeline Cache] Loaded runtime cache: ${
+        Object.keys(
+          runtimeCache
+        ).length
+      } emails`
+    );
   } catch (error: any) {
     if (
       error?.code !==
       "ENOENT"
     ) {
       console.error(
-        "[Pipeline Cache] Existing-case restore failed:",
+        "[Pipeline Cache] Failed to load runtime cache:",
         error
       );
     }
   }
+
+  // ==================================================
+  // 3. Merge them
+  //
+  // Baseline provides the shared 520.
+  // Runtime overrides/adds newer local results.
+  // ==================================================
+  processedEmailCache = {
+    ...baselineCache,
+    ...runtimeCache,
+  };
+
+  console.log(
+    `[Pipeline Cache] Total available: ${
+      Object.keys(
+        processedEmailCache
+      ).length
+    } emails`
+  );
+
+  // ==================================================
+  // 4. Restore all cached cases into memory
+  // ==================================================
+  for (
+    const entry of
+    Object.values(
+      processedEmailCache
+    )
+  ) {
+    if (entry?.case) {
+      caseRepository.save(
+        entry.case
+      );
+    }
+  }
+
+  // ==================================================
+  // 5. Create/update this laptop's runtime cache
+  //    using the merged result
+  // ==================================================
+  if (
+    Object.keys(
+      processedEmailCache
+    ).length > 0
+  ) {
+    await saveProcessedEmailCache();
+  }
+}
+
+function normalizeHumanOverride(
+  field: ComparisonField,
+  value: string
+): string | number {
+  switch (field) {
+    case "container_count":
+      return normalizeContainerCount(
+        value
+      ).normalized;
+
+    case "gross_weight_kg":
+      return normalizeGrossWeight(
+        value
+      ).normalized;
+
+    case "port_of_loading":
+    case "port_of_discharge":
+      return normalizePort(
+        value
+      ).normalized;
+
+    case "shipper":
+    case "consignee":
+    case "notify_party":
+      return normalizeEntityName(
+        value
+      ).normalized;
+  }
+}
+
+function applyHumanOverride(
+  document:
+    ExtractedDocumentFields,
+  field: ComparisonField,
+  value: string
+): ExtractedDocumentFields {
+  const updated =
+    JSON.parse(
+      JSON.stringify(document)
+    ) as ExtractedDocumentFields;
+
+  updated.fields[field] = {
+    ...updated.fields[field],
+
+    raw: value,
+
+    normalized:
+      normalizeHumanOverride(
+        field,
+        value
+      ),
+
+    confidence: 1,
+
+    snippet:
+      `Human-reviewed value: ${value}`,
+  };
+
+  updated.unreadableFields =
+    (
+      updated.unreadableFields ??
+      []
+    ).filter(
+      (item) =>
+        item !== field
+    );
+
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -631,10 +745,52 @@ app.post("/api/ds1/read-document", async (req, res) => {
       content = lines.join("\n");
       fileType = "xlsx";
     } else if (extension === ".pdf") {
-      const parser = new PDFParse({ data });
-      const result = await parser.getText();
-      content = result.text;
       fileType = "pdf";
+
+      const parser = new PDFParse({
+        data
+      });
+
+      try {
+        const result =
+          await parser.getText();
+
+        content =
+          result.text?.trim() || "";
+
+        // A valid PDF with no extractable text
+        // may be a scanned/image PDF.
+        if (!content) {
+          console.warn(
+            `[Document Reader] PDF contains no extractable text: ${attachmentPath}`
+          );
+        }
+      } catch (error: any) {
+        console.warn(
+          `[Document Reader] Unreadable PDF: ${attachmentPath} - ${error.message}`
+        );
+
+        // IMPORTANT:
+        // Do not return HTTP 500.
+        // Let the pipeline route this to Human Review.
+        content = "";
+
+        try {
+          await parser.destroy();
+        } catch {
+          // Ignore cleanup failure.
+        }
+
+        return res.json({
+          path: attachmentPath,
+          fileType: "pdf",
+          content: "",
+          unreadable: true,
+          readError:
+            "invalid_pdf_structure"
+        });
+      }
+
       await parser.destroy();
     } else if (extension === ".docx") {
       const result = await mammoth.extractRawText({ buffer: data });
@@ -1108,6 +1264,511 @@ app.post("/api/cases", (req, res) => {
 });
 
 app.post(
+  "/api/cases/:id/review",
+  async (req, res) => {
+    try {
+      const caseId =
+        req.params.id;
+
+      const shipmentCase =
+        caseRepository.getById(
+          caseId
+        );
+
+      if (!shipmentCase) {
+        return res
+          .status(404)
+          .json({
+            error:
+              "Shipment case not found.",
+          });
+      }
+
+      const {
+        reviewer,
+        approvedStatus,
+        comments,
+        manualOverride,
+      } = req.body || {};
+
+      // -----------------------------------------
+      // Validate human decision
+      // -----------------------------------------
+
+      if (
+        typeof reviewer !==
+          "string" ||
+        !reviewer.trim()
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "reviewer is required.",
+          });
+      }
+
+      if (
+        approvedStatus !== "OK" &&
+        approvedStatus !==
+          "MISMATCH"
+      ) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "approvedStatus must be OK or MISMATCH.",
+          });
+      }
+
+      const validFields:
+        ComparisonField[] = [
+          "shipper",
+          "consignee",
+          "notify_party",
+          "port_of_loading",
+          "port_of_discharge",
+          "container_count",
+          "gross_weight_kg",
+        ];
+
+      let effectiveSi =
+        shipmentCase.siData;
+
+      let effectiveBl =
+        shipmentCase.blData;
+
+      let reverification:
+        ReturnType<
+          typeof verifyDocuments
+        > | null = null;
+
+      // -----------------------------------------
+      // Optional manual field correction
+      // -----------------------------------------
+
+      if (manualOverride) {
+        const {
+          field,
+          documentType,
+          value,
+        } = manualOverride;
+
+        if (
+          !validFields.includes(
+            field
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "Invalid override field.",
+            });
+        }
+
+        if (
+          documentType !==
+            "SI" &&
+          documentType !==
+            "BL"
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "documentType must be SI or BL.",
+            });
+        }
+
+        if (
+          typeof value !==
+            "string" ||
+          !value.trim()
+        ) {
+          return res
+            .status(400)
+            .json({
+              error:
+                "Override value is required.",
+            });
+        }
+
+        if (
+          documentType === "SI"
+        ) {
+          if (!effectiveSi) {
+            return res
+              .status(400)
+              .json({
+                error:
+                  "Cannot override SI because no SI extraction exists.",
+              });
+          }
+
+          effectiveSi =
+            applyHumanOverride(
+              effectiveSi,
+              field,
+              value.trim()
+            );
+        } else {
+          if (!effectiveBl) {
+            return res
+              .status(400)
+              .json({
+                error:
+                  "Cannot override BL because no BL extraction exists.",
+              });
+          }
+
+          effectiveBl =
+            applyHumanOverride(
+              effectiveBl,
+              field,
+              value.trim()
+            );
+        }
+
+        // ---------------------------------------
+        // Rerun deterministic DS2 verification
+        // using EFFECTIVE copies.
+        //
+        // Original AI extraction remains intact.
+        // ---------------------------------------
+
+        if (
+          effectiveSi &&
+          effectiveBl
+        ) {
+          reverification =
+            verifyDocuments(
+              effectiveSi,
+              effectiveBl,
+              {
+                hasSi: true,
+                hasBl: true,
+              }
+            );
+        }
+      }
+
+      const timestamp =
+        new Date().toISOString();
+
+      // -----------------------------------------
+      // Final status
+      //
+      // If deterministic verification can now
+      // reach OK/MISMATCH, use that.
+      //
+      // Otherwise the human-approved status is
+      // authoritative.
+      // -----------------------------------------
+
+      const finalStatus =
+        reverification &&
+        reverification.status !==
+          "NEEDS_REVIEW"
+          ? reverification.status
+          : approvedStatus;
+
+      const finalHasDefect =
+        finalStatus ===
+        "MISMATCH";
+
+      let finalDefectFields =
+        shipmentCase.defectFields ??
+        [];
+
+      if (reverification) {
+        finalDefectFields =
+          reverification.defectFields;
+      }
+
+      if (
+        finalStatus === "OK"
+      ) {
+        finalDefectFields = [];
+      }
+
+      // -----------------------------------------
+      // Update real ShipmentCase
+      // -----------------------------------------
+
+      const updatedCase = {
+        ...shipmentCase,
+
+        verificationStatus:
+          finalStatus,
+
+        hasDefect:
+          finalHasDefect,
+
+        defectFields:
+          finalDefectFields,
+
+        reviewReason: null,
+
+        humanReviewed: true,
+
+        humanReviewDecision: {
+          reviewer:
+            reviewer.trim(),
+
+          timestamp,
+
+          approvedStatus:
+            finalStatus,
+
+          manualOverrides:
+            manualOverride
+              ? {
+                  [manualOverride.field]:
+                    manualOverride.value,
+                }
+              : undefined,
+
+          comments:
+            comments?.trim() ||
+            `Human review resolved as ${finalStatus}.`,
+        },
+
+        fieldComparisons:
+          reverification
+            ?.fieldComparisons ??
+          shipmentCase
+            .fieldComparisons,
+
+        timeline: [
+          ...(
+            shipmentCase.timeline ??
+            []
+          ),
+
+          {
+            id:
+              `T-HUMAN-${Date.now()}`,
+
+            timestamp,
+
+            agent:
+              "Human Reviewer" as const,
+
+            action:
+              "Human Review Decision",
+
+            summary:
+              `${reviewer.trim()} resolved the case as ${finalStatus}.`,
+
+            status:
+              finalStatus ===
+              "OK"
+                ? "success" as const
+                : "warning" as const,
+
+            details: {
+              originalStatus:
+                shipmentCase
+                  .verificationStatus,
+
+              approvedStatus,
+
+              finalStatus,
+
+              manualOverride:
+                manualOverride ??
+                null,
+
+              reverificationStatus:
+                reverification
+                  ?.status ??
+                null,
+
+              comments:
+                comments ??
+                "",
+            },
+          },
+        ],
+
+        decisions: [
+          ...(
+            shipmentCase.decisions ??
+            []
+          ),
+
+          {
+            id:
+              `DEC-HUMAN-${Date.now()}`,
+
+            caseId:
+              shipmentCase.id,
+
+            emailId:
+              shipmentCase.emailId,
+
+            agent:
+              "Human Reviewer",
+
+            decision:
+              `Human review resolved case as ${finalStatus}`,
+
+            siValue:
+              manualOverride
+                ?.documentType ===
+              "SI"
+                ? manualOverride.value
+                : undefined,
+
+            blValue:
+              manualOverride
+                ?.documentType ===
+              "BL"
+                ? manualOverride.value
+                : undefined,
+
+            evidenceSnippet:
+              comments ||
+              "Human operator decision",
+
+            confidence:
+              "HUMAN_CONFIRMED",
+
+            validationStatus:
+              "Overridden" as const,
+
+            humanInterventionRequired:
+              false,
+
+            timestamp,
+          },
+        ],
+      };
+
+      // -----------------------------------------
+      // Save backend repository
+      // -----------------------------------------
+
+      caseRepository.save(
+        updatedCase
+      );
+
+      // -----------------------------------------
+      // IMPORTANT:
+      // Update persistent processed-email cache.
+      //
+      // Otherwise server restart would restore
+      // the OLD NEEDS_REVIEW case.
+      // -----------------------------------------
+
+      const cached =
+        processedEmailCache[
+          shipmentCase.emailId
+        ];
+
+      if (cached) {
+        cached.case =
+          updatedCase;
+
+        cached.processedAt =
+          timestamp;
+
+        await saveProcessedEmailCache();
+      }
+
+      // -----------------------------------------
+      // Add structured agent/audit event
+      // -----------------------------------------
+
+      await auditRepository.append([
+        {
+          id:
+            `${caseId}-${Date.now()}-human-review`,
+
+          caseId,
+
+          shipmentReference:
+            shipmentCase
+              .shipmentReference,
+
+          agent:
+            "critic",
+
+          action:
+            "human_review_resolved",
+
+          status:
+            "completed",
+
+          summary:
+            `Human reviewer ${reviewer.trim()} resolved the case as ${finalStatus}.`,
+
+          evidence: {
+            originalStatus:
+              shipmentCase
+                .verificationStatus,
+
+            finalStatus,
+
+            manualOverride:
+              manualOverride ??
+              null,
+
+            reverificationStatus:
+              reverification
+                ?.status ??
+              null,
+          },
+
+          timestamp,
+        },
+      ]);
+
+      return res.json({
+        success: true,
+
+        case: updatedCase,
+
+        reverification:
+          reverification
+            ? {
+                status:
+                  reverification.status,
+
+                hasDefect:
+                  reverification.hasDefect,
+
+                defectFields:
+                  reverification
+                    .defectFields,
+
+                explanation:
+                  reverification
+                    .explanation,
+              }
+            : null,
+      });
+    } catch (error: any) {
+      console.error(
+        "Human review failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          error:
+            error?.message ||
+            "Human review failed.",
+        });
+    }
+  }
+);
+
+app.post(
   "/api/pipeline/process/:emailId",
   async (req, res) => {
     try {
@@ -1408,16 +2069,30 @@ async function processNewEmails():
       await saveProcessedEmailCache();
     }
 
+    // --------------------------------------------------
+    // No changes = no Gemini + no terminal noise
+    // --------------------------------------------------
+    if (queue.length === 0) {
+      return;
+    }
+
+    // Only log when there is actual work
+    console.log(
+      `[Pipeline] Detected ${queue.length} new/changed email(s)`
+    );
+
     console.log(
       `[Pipeline] Inbox total: ${emails.length}`
     );
 
-    console.log(
-      `[Pipeline] Already processed: ${pipelineRunState.skipped}`
-    );
+
+    const MAX_AUTO_PROCESS = 5;
+
+    const processingQueue =
+      queue.slice(0, MAX_AUTO_PROCESS);
 
     console.log(
-      `[Pipeline] New/changed: ${queue.length}`
+      `[Pipeline] Processing this run: ${processingQueue.length}`
     );
 
     // ----------------------------------
@@ -1426,19 +2101,19 @@ async function processNewEmails():
     // ----------------------------------
     for (
       let index = 0;
-      index < queue.length;
+      index < processingQueue.length;
       index++
     ) {
       const {
         email,
         fingerprint,
-      } = queue[index];
+      } = processingQueue[index];
 
       pipelineRunState.currentEmailId =
         email.email_id;
 
       console.log(
-        `[Pipeline] New email ${index + 1}/${queue.length}: ${email.email_id}`
+        `[Pipeline] New email ${index + 1}/${processingQueue.length}: ${email.email_id}`
       );
 
       try {
@@ -1696,6 +2371,258 @@ app.post("/api/revision/compare", (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 });
+
+app.post(
+  "/api/maintenance/reverify-cached",
+  async (_req, res) => {
+    try {
+      let checked = 0;
+      let updated = 0;
+      let skipped = 0;
+
+      const before = {
+        OK: 0,
+        MISMATCH: 0,
+        NEEDS_REVIEW: 0,
+      };
+
+      const after = {
+        OK: 0,
+        MISMATCH: 0,
+        NEEDS_REVIEW: 0,
+      };
+
+      // ------------------------------------------
+      // Count current BL_COMPARISON status
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          caseObj?.category !==
+          "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        if (
+          caseObj.verificationStatus in
+          before
+        ) {
+          before[
+            caseObj.verificationStatus as
+              keyof typeof before
+          ]++;
+        }
+      }
+
+      // ------------------------------------------
+      // Reverify using STORED SI/BL data only
+      //
+      // ZERO GEMINI CALLS
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          !caseObj ||
+          caseObj.category !==
+            "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        // Preserve explicit human decisions.
+        if (
+          caseObj.humanReviewed
+        ) {
+          skipped++;
+          continue;
+        }
+
+        // Don't overwrite Phase 4 revision state.
+        if (
+          caseObj.hasRevision
+        ) {
+          skipped++;
+          continue;
+        }
+
+        // Cases without usable SI/BL should remain
+        // genuine NEEDS_REVIEW cases.
+        if (
+          !caseObj.siData ||
+          !caseObj.blData
+        ) {
+          skipped++;
+          continue;
+        }
+
+        checked++;
+
+        const verification =
+          verifyDocuments(
+            caseObj.siData,
+            caseObj.blData,
+            {
+              hasSi: true,
+              hasBl: true,
+            }
+          );
+
+        const changed =
+          caseObj
+            .verificationStatus !==
+            verification.status ||
+          caseObj.reviewReason !==
+            verification
+              .reviewReason ||
+          JSON.stringify(
+            caseObj.defectFields ??
+              []
+          ) !==
+            JSON.stringify(
+              verification
+                .defectFields
+            );
+
+        const updatedCase = {
+          ...caseObj,
+
+          verificationStatus:
+            verification.status,
+
+          hasDefect:
+            verification.hasDefect,
+
+          defectFields:
+            verification
+              .defectFields,
+
+          reviewReason:
+            verification
+              .reviewReason,
+
+          fieldComparisons:
+            verification
+              .fieldComparisons,
+
+          priorityScore:
+            verification.status ===
+            "NEEDS_REVIEW"
+              ? 95
+              : verification
+                    .status ===
+                  "MISMATCH"
+                ? 80
+                : 20,
+
+          priorityReasons: [
+            verification
+              .explanation,
+          ],
+        };
+
+        entry.case =
+          updatedCase;
+
+        entry.processedAt =
+          new Date()
+            .toISOString();
+
+        caseRepository.save(
+          updatedCase
+        );
+
+        if (changed) {
+          updated++;
+        }
+      }
+
+      // ------------------------------------------
+      // Persist corrected cache
+      // ------------------------------------------
+
+      await saveProcessedEmailCache();
+
+      // ------------------------------------------
+      // Count corrected results
+      // ------------------------------------------
+
+      for (
+        const entry of
+        Object.values(
+          processedEmailCache
+        )
+      ) {
+        const caseObj =
+          entry?.case;
+
+        if (
+          caseObj?.category !==
+          "BL_COMPARISON"
+        ) {
+          continue;
+        }
+
+        if (
+          caseObj.verificationStatus in
+          after
+        ) {
+          after[
+            caseObj.verificationStatus as
+              keyof typeof after
+          ]++;
+        }
+      }
+
+      return res.json({
+        success: true,
+
+        message:
+          "Cached SI/BL cases were reverified without Gemini.",
+
+        checked,
+        updated,
+        skipped,
+
+        before,
+        after,
+      });
+    } catch (
+      error: any
+    ) {
+      console.error(
+        "Cached reverification failed:",
+        error
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+
+          error:
+            error?.message ||
+            "Cached reverification failed.",
+        });
+    }
+  }
+);
 
 // ---------------------------------------------------------------------------
 // Gemini Copilot integration

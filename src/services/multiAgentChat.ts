@@ -15,7 +15,6 @@ import {
 
 import {
   AgentEvent,
-  getAgentEvents,
   runOrchestration,
 } from "./orchestrationClient";
 
@@ -905,36 +904,10 @@ export async function runMultiAgentCollaboration(
     ];
   }
 
-  let events:
-    AgentEvent[] = [];
-
-  // ----------------------------------------------------------
-  // First reuse existing real audit events.
-  // Do not create duplicate orchestration events unnecessarily.
-  // ----------------------------------------------------------
-
-  try {
-    events =
-      await getAgentEvents(
-        selectedCase.id
-      );
-  } catch {
-    events = [];
-  }
-
-  // ----------------------------------------------------------
-  // If case has never been orchestrated,
-  // run backend orchestration once.
-  // ----------------------------------------------------------
-
-  if (
-    events.length === 0
-  ) {
-    events =
-      await runOrchestration(
-        selectedCase.id
-      );
-  }
+  const events =
+  await runOrchestration(
+    selectedCase.id
+  );
 
   // ----------------------------------------------------------
   // Direct 1-on-1 mode

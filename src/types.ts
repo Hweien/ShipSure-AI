@@ -100,8 +100,22 @@ export interface DocumentIdentificationResult {
 
 export interface ReadDocumentResult {
   path: string;
-  fileType: "txt" | "pdf" | "doc" | "docx" | "xlsx" | "png" | "jpg" | "jpeg";
+
+  fileType:
+    | "txt"
+    | "pdf"
+    | "doc"
+    | "docx"
+    | "xlsx"
+    | "png"
+    | "jpg"
+    | "jpeg";
+
   content: string;
+
+  unreadable?: boolean;
+
+  readError?: string;
 }
 
 export interface AttachmentContent {
