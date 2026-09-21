@@ -319,8 +319,15 @@ export function verifyDocuments(
         );
 
       if (numSi === numBl) {
-        matchStatus = String(siField.raw).trim() === String(blField.raw).trim() ? "EXACT_MATCH" : "NORMALIZED_MATCH";
-        notes = matchStatus === "EXACT_MATCH" ? "Exact numeric equality" : "Normalized unit equality (e.g. MT to KG)";
+        matchStatus =
+          String(siField.raw).trim() === String(blField.raw).trim()
+            ? "EXACT_MATCH"
+            : "NORMALIZED_MATCH";
+
+        notes =
+          matchStatus === "EXACT_MATCH"
+            ? "Exact numeric equality"
+            : "Normalized unit equality (e.g. MT to KG)";
       } else {
         matchStatus = "MISMATCH";
         const diff = numBl - numSi;
