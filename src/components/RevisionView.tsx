@@ -3,18 +3,14 @@ import {
   GitCompare, 
   CheckCircle2, 
   AlertTriangle, 
-  ArrowRight, 
-  UserCheck, 
-  FileText,
-  ShieldAlert,
-  Clock
+  ShieldAlert
 } from "lucide-react";
 import { ShipmentCase } from "../types";
 
 interface RevisionViewProps {
   cases: ShipmentCase[];
   onOpenCase: (caseId: string) => void;
-  onNavigateToHumanReview: () => void;
+  onNavigateToHumanReview: (caseId: string) => void; 
 }
 
 export const RevisionView: React.FC<RevisionViewProps> = ({
@@ -23,6 +19,15 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
   onNavigateToHumanReview
 }) => {
   const revisionCases = cases.filter((c) => c.hasRevision);
+
+  // ✅ Officially set the status to NEEDS_REVIEW so it appears in Human Review
+  const handleSendToReview = (c: ShipmentCase) => {
+    c.verificationStatus = "NEEDS_REVIEW";
+    if (c.revisionComparison) {
+      c.revisionComparison.overallOutcome = "NEEDS_HUMAN_REVIEW";
+    }
+    onNavigateToHumanReview(c.id);
+  };
 
   return (
     <div id="revision-view" className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -68,13 +73,14 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => onOpenCase(c.id)}
-                    className="text-xs bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 font-semibold px-3 py-1.5 rounded-lg transition"
+                    className="text-xs bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 font-semibold px-3 py-1.5 rounded-lg transition cursor-pointer"
                   >
                     View SI vs BL
                   </button>
+                  {/* ✅ Calls handleSendToReview to guarantee it appears in Human Review */}
                   <button
-                    onClick={onNavigateToHumanReview}
-                    className="text-xs bg-purple-600 hover:bg-purple-700 text-white font-semibold px-3.5 py-1.5 rounded-lg transition cursor-pointer"
+                    onClick={() => handleSendToReview(c)}
+                    className="text-xs bg-purple-600 hover:bg-purple-700 text-white font-semibold px-3.5 py-1.5 rounded-lg transition cursor-pointer shadow-2xs"
                   >
                     Send to Review Desk
                   </button>
@@ -115,7 +121,6 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {/* Corrected fields */}
                       {rev.correctedFields.map((cf, i) => (
                         <tr key={i} className="hover:bg-emerald-50/20">
                           <td className="py-3 px-4 font-semibold text-slate-900 capitalize">
@@ -133,7 +138,6 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                         </tr>
                       ))}
 
-                      {/* Unexpected changes */}
                       {rev.unexpectedChanges.map((uc, i) => (
                         <tr key={i} className="bg-red-50/40">
                           <td className="py-3 px-4 font-bold text-red-900 capitalize">
@@ -156,14 +160,13 @@ export const RevisionView: React.FC<RevisionViewProps> = ({
                   </table>
                 </div>
 
-                {/* Explanation Callout */}
                 <div className="mt-4 p-3.5 bg-slate-50 rounded-lg border border-slate-200 text-xs space-y-1.5 text-slate-700">
                   <div className="font-bold text-slate-900 flex items-center gap-1.5">
                     <ShieldAlert className="w-4 h-4 text-amber-600" />
                     Revision Agent Forensic Summary:
                   </div>
                   <p className="leading-relaxed text-slate-600">
-                    The carrier successfully corrected the Container Count from 4 to 3 and the Gross Weight from 19,500 KG to 18,200 KG. However, during re-drafting, the Consignee was altered from <strong>"PACIFIC INDUSTRIAL TRADING LTD"</strong> to <strong>"PACIFIC INDUSTRIAL LOGISTICS GROUP LTD"</strong>. Since this was not requested, the release must remain on hold until authorized.
+                    The carrier successfully corrected Container Count and Gross Weight. However, Consignee was altered from <strong>"PACIFIC INDUSTRIAL TRADING LTD"</strong> to <strong>"PACIFIC INDUSTRIAL LOGISTICS GROUP LTD"</strong>.
                   </p>
                 </div>
               </div>

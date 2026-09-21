@@ -1,1 +1,105 @@
 @import "tailwindcss";
+
+/* =========================================================
+   Maritime Background Motion & Trade Lane Pulse Animations
+   ========================================================= */
+
+@keyframes seaLaneDash {
+  0% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 160;
+  }
+}
+
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes floatDelayed {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(8px);
+  }
+}
+
+.animate-sea-lane {
+  animation: seaLaneDash 18s linear infinite;
+}
+
+.animate-sea-lane-reverse {
+  animation: seaLaneDash 24s linear infinite reverse;
+}
+
+.animate-float-slow {
+  animation: floatSlow 6s ease-in-out infinite;
+}
+
+.animate-float-delayed {
+  animation: floatDelayed 7s ease-in-out infinite 1s;
+}
+
+/* Accessibility: Respect Reduced Motion Preference */
+@media (prefers-reduced-motion: reduce) {
+  .animate-sea-lane,
+  .animate-sea-lane-reverse,
+  .animate-float-slow,
+  .animate-float-delayed {
+    animation: none !important;
+  }
+}
+
+/* =========================================================
+   WCAG 2.1 Colorblind & High-Contrast Design System
+   ========================================================= */
+
+.badge-match {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border: 1.5px solid #059669;
+  font-weight: 700;
+}
+
+.badge-mismatch {
+  background-color: #fef2f2;
+  color: #991b1b;
+  border: 1.5px solid #dc2626;
+  font-weight: 700;
+  text-decoration: underline decoration-red-400 decoration-1;
+}
+
+.badge-review {
+  background-color: #fffbeb;
+  color: #92400e;
+  border: 1.5px solid #d97706;
+  font-weight: 700;
+}
+
+.badge-normalized {
+  background-color: #eff6ff;
+  color: #1e40af;
+  border: 1.5px solid #3b82f6;
+  font-weight: 700;
+}
+
+tr.row-mismatch {
+  background-color: rgba(254, 242, 242, 0.4);
+  border-left: 4px solid #dc2626 !important;
+}
+
+tr.row-review {
+  background-color: rgba(255, 251, 235, 0.4);
+  border-left: 4px solid #d97706 !important;
+}
+
+tr.row-match {
+  border-left: 4px solid #10b981 !important;
+}

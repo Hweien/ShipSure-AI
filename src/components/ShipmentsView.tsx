@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   FileCheck2, 
   Search, 
@@ -27,6 +27,12 @@ export const ShipmentsView: React.FC<ShipmentsViewProps> = ({
 }) => {
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [fieldFilter, setFieldFilter] = useState<string>(initialFilterField || "ALL");
+  // FIX: When user drills down from Analytics, immediately sync the filter dropdown!
+  useEffect(() => {
+    if (initialFilterField) {
+      setFieldFilter(initialFilterField);
+    }
+  }, [initialFilterField]);
   const [searchQuery, setSearchQuery] = useState("");
 
   const comparisonCases = cases.filter((c) => c.category === "BL_COMPARISON");

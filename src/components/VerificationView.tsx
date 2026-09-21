@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   ArrowLeft, 
   CheckCircle2, 
@@ -10,14 +10,11 @@ import {
   Copy, 
   Check, 
   FileText, 
-  ExternalLink,
-  ShieldCheck,
   ChevronRight,
   X,
   Camera
 } from "lucide-react";
-import { ComparisonField, FieldEvidence, ShipmentCase, SingleFieldComparison } from "../types";
-import { datasetProvider } from "../services/datasetProvider";
+import { ComparisonField, ShipmentCase, SingleFieldComparison } from "../types";
 
 interface VerificationViewProps {
   shipmentCase: ShipmentCase;
@@ -36,10 +33,46 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
 }) => {
   const [activeEvidence, setActiveEvidence] = useState<SingleFieldComparison | null>(null);
   const [showCorrectionModal, setShowCorrectionModal] = useState(false);
-  const [draftSubject, setDraftSubject] = useState(shipmentCase.draftResolution?.subject || `BL Amendment Required – Shipment ${shipmentCase.shipmentReference}`);
+  const [draftSubject, setDraftSubject] = useState(
+    shipmentCase.draftResolution?.subject || `BL Amendment Required – Shipment ${shipmentCase.shipmentReference}`
+  );
   const [draftBody, setDraftBody] = useState(shipmentCase.draftResolution?.body || "");
   const [copied, setCopied] = useState(false);
   const [draftApproved, setDraftApproved] = useState(shipmentCase.draftResolution?.status === "APPROVED");
+
+  // ✅ Keep draft email synchronized whenever a different shipment is selected
+  useEffect(() => {
+    setDraftSubject(
+      shipmentCase.draftResolution?.subject ||
+        `BL Amendment Required – Shipment ${shipmentCase.shipmentReference}`
+    );
+    setDraftBody(shipmentCase.draftResolution?.body || "");
+    setDraftApproved(shipmentCase.draftResolution?.status === "APPROVED");
+  }, [shipmentCase]);
+
+  // Ensure all 7 mandatory fields exist in the rows
+  const MANDATORY_KEYS: { key: ComparisonField; label: string }[] = [
+    { key: "shipper", label: "Shipper" },
+    { key: "consignee", label: "Consignee" },
+    { key: "notify_party", label: "Notify Party" },
+    { key: "port_of_loading", label: "Port of Loading" },
+    { key: "port_of_discharge", label: "Port of Discharge" },
+    { key: "container_count", label: "Container Count" },
+    { key: "gross_weight_kg", label: "Gross Weight (KG)" },
+  ];
+
+  const displayedComparisons = MANDATORY_KEYS.map((mandatory) => {
+    const existing = shipmentCase.fieldComparisons.find((f) => f.field === mandatory.key);
+    if (existing) return existing;
+    return {
+      field: mandatory.key,
+      label: mandatory.label,
+      status: "NEEDS_REVIEW" as const,
+      siEvidence: null,
+      blEvidence: null,
+      notes: "Field missing from document extraction"
+    };
+  }); 
 
   const mismatches = shipmentCase.fieldComparisons.filter((f) => f.status === "MISMATCH");
   const normalizedMatches = shipmentCase.fieldComparisons.filter((f) => f.status === "NORMALIZED_MATCH");
@@ -63,30 +96,30 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
     switch (status) {
       case "EXACT_MATCH":
         return (
-          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
-            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-            MATCH
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-md bg-emerald-50 text-emerald-900 border-2 border-emerald-600 shadow-2xs">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+            <span>EXACT MATCH</span>
           </span>
         );
       case "NORMALIZED_MATCH":
         return (
-          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200">
-            <Sparkles className="w-3 h-3 text-blue-600" />
-            NORMALIZED MATCH
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-md bg-blue-50 text-blue-900 border-2 border-blue-600 shadow-2xs">
+            <Sparkles className="w-3.5 h-3.5 text-blue-700 shrink-0" />
+            <span>NORMALIZED</span>
           </span>
         );
       case "MISMATCH":
         return (
-          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded bg-red-100 text-red-800 border border-red-200">
-            <AlertTriangle className="w-3 h-3 text-red-600" />
-            MISMATCH
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-md bg-rose-50 text-rose-950 border-2 border-rose-600 shadow-2xs">
+            <AlertTriangle className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+            <span className="underline decoration-rose-500">MISMATCH</span>
           </span>
         );
       case "NEEDS_REVIEW":
         return (
-          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
-            <UserCheck className="w-3 h-3 text-amber-600" />
-            NEEDS REVIEW
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-950 border-2 border-amber-600 shadow-2xs">
+            <UserCheck className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+            <span>NEEDS REVIEW</span>
           </span>
         );
       default:
@@ -178,8 +211,13 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
         </div>
       </div>
 
-      {/* Hard-to-Read Scan / Messy PDF Vision Alert */}
-      {(shipmentCase.reviewReason === "unreadable" || shipmentCase.fieldComparisons.some(f => f.blEvidence?.originalValue?.includes("smudge") || f.blEvidence?.originalValue?.includes("SMUDGE"))) && (
+      {/* Hard-to-Read Scan Vision Alert */}
+      {(shipmentCase.reviewReason === "unreadable" ||
+        shipmentCase.fieldComparisons.some(
+          (f) =>
+            f.blEvidence?.originalValue?.includes("smudge") ||
+            f.blEvidence?.originalValue?.includes("SMUDGE")
+        )) && (
         <div className="bg-gradient-to-r from-indigo-950 via-slate-900 to-indigo-900 text-white p-4 rounded-xl shadow-md border border-indigo-700/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shrink-0 shadow-xs">
@@ -207,6 +245,25 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
               <span>Launch AI Vision OCR Reader</span>
             </button>
           )}
+        </div>
+      )}
+
+      {mismatches.length === 0 && reviewFields.length === 0 && (
+        <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-4 flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold shrink-0">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-emerald-900">No Mismatch Detected</h3>
+              <p className="text-xs text-emerald-700 mt-0.5">
+                All 7 required fields match between the customer Shipping Instruction (SI) and draft Bill of Lading (BL).
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-semibold px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-200">
+            7/7 Verified
+          </span>
         </div>
       )}
 
@@ -275,7 +332,7 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {shipmentCase.fieldComparisons.map((item) => {
+            {displayedComparisons.map((item) => {
               const isMismatch = item.status === "MISMATCH";
               const isNormalized = item.status === "NORMALIZED_MATCH";
               const isReview = item.status === "NEEDS_REVIEW";
@@ -283,8 +340,12 @@ export const VerificationView: React.FC<VerificationViewProps> = ({
               return (
                 <tr
                   key={item.field}
-                  className={`hover:bg-slate-50/80 transition ${
-                    isMismatch ? "bg-red-50/30" : isReview ? "bg-amber-50/30" : ""
+                  className={`hover:bg-slate-50 transition border-b border-slate-100 ${
+                    isMismatch 
+                      ? "bg-red-50/30 border-l-4 border-l-red-600" 
+                      : isReview 
+                      ? "bg-amber-50/30 border-l-4 border-l-amber-500" 
+                      : "border-l-4 border-l-emerald-500"
                   }`}
                 >
                   <td className="py-3.5 px-4 font-semibold text-slate-900 align-top">

@@ -12,7 +12,12 @@ import {
 } from "lucide-react";
 import { datasetProvider } from "../services/datasetProvider";
 
-export const SettingsView: React.FC = () => {
+// ✅ Added props interface with onRefreshData callback
+interface SettingsViewProps {
+  onRefreshData?: () => void;
+}
+
+export const SettingsView: React.FC<SettingsViewProps> = ({ onRefreshData }) => {
   const [dataSource, setDataSource] = useState<"DEMO" | "LOCAL" | "DOCKER">("DEMO");
   const [dataPath, setDataPath] = useState("./data");
   const [dataApiUrl, setDataApiUrl] = useState("http://localhost:8080");
@@ -50,10 +55,14 @@ export const SettingsView: React.FC = () => {
         })
       });
       setSavedSuccess(true);
+      // ✅ Reload cases and emails in App.tsx immediately
+      onRefreshData?.();
       setTimeout(() => setSavedSuccess(false), 2500);
       fetchHealth();
     } catch (e) {
       console.error(e);
+      // ✅ Ensure local UI data state updates even if backend endpoint is unavailable
+      onRefreshData?.();
     }
   };
 
