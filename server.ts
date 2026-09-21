@@ -85,6 +85,19 @@ const RUNTIME_DIR =
     "runtime"
   );
 
+// ---------------------------------------------------------------------------
+// PHASE 6 FIX
+// Baseline is the immutable starting cache.
+// Runtime cache contains persisted runtime changes/overrides.
+// Runtime takes precedence when the same email exists in both.
+// ---------------------------------------------------------------------------
+const BASELINE_PROCESSED_CACHE_FILE =
+  path.resolve(
+    process.cwd(),
+    "data",
+    "baseline-processed-email-cases.json"
+  );
+
 const PROCESSED_CACHE_FILE =
   path.join(
     RUNTIME_DIR,
@@ -328,42 +341,41 @@ async function loadProcessedState() {
   await fs.mkdir(
     RUNTIME_DIR,
     {
-      recursive: true,
+      recursive: true
     }
   );
 
   // ----------------------------------
-  // Load permanent processed cache
+  // PHASE 6 FIX
+  // Load immutable baseline first.
   // ----------------------------------
+  let baselineCache:
+    ProcessedEmailCache = {};
+
   try {
     const content =
       await fs.readFile(
-        PROCESSED_CACHE_FILE,
+        BASELINE_PROCESSED_CACHE_FILE,
         "utf8"
       );
 
-    processedEmailCache =
-      JSON.parse(content);
+    const cleanContent =
+      content.replace(
+        /^\uFEFF/,
+        ""
+      );
 
-    for (
-      const entry of
-      Object.values(
-        processedEmailCache
-      )
-    ) {
-      if (entry?.case) {
-        caseRepository.save(
-          entry.case
-        );
-      }
-    }
+    baselineCache =
+      JSON.parse(
+        cleanContent
+      );
 
     console.log(
       `[Pipeline Cache] Loaded ${
         Object.keys(
-          processedEmailCache
+          baselineCache
         ).length
-      } cached emails`
+      } baseline cached emails`
     );
   } catch (error: any) {
     if (
@@ -371,11 +383,96 @@ async function loadProcessedState() {
       "ENOENT"
     ) {
       console.error(
-        "[Pipeline Cache] Failed to load cache:",
+        "[Pipeline Cache] Failed to load baseline cache:",
         error
+      );
+    } else {
+      console.warn(
+        "[Pipeline Cache] Baseline cache not found."
       );
     }
   }
+
+  // ----------------------------------
+  // PHASE 6 FIX
+  // Load mutable runtime overlay.
+  // ----------------------------------
+  let runtimeCache:
+    ProcessedEmailCache = {};
+
+  try {
+    const content =
+      await fs.readFile(
+        PROCESSED_CACHE_FILE,
+        "utf8"
+      );
+
+    const cleanContent =
+      content.replace(
+        /^\uFEFF/,
+        ""
+      );
+
+    runtimeCache =
+      JSON.parse(
+        cleanContent
+      );
+
+    console.log(
+      `[Pipeline Cache] Loaded ${
+        Object.keys(
+          runtimeCache
+        ).length
+      } runtime cached emails`
+    );
+  } catch (error: any) {
+    if (
+      error?.code !==
+      "ENOENT"
+    ) {
+      console.error(
+        "[Pipeline Cache] Failed to load runtime cache:",
+        error
+      );
+    } else {
+      console.log(
+        "[Pipeline Cache] No runtime cache found. Using baseline cache."
+      );
+    }
+  }
+
+  // ----------------------------------
+  // PHASE 6 FIX
+  // Runtime overrides baseline.
+  // ----------------------------------
+  processedEmailCache = {
+    ...baselineCache,
+    ...runtimeCache,
+  };
+
+  // ----------------------------------
+  // Load merged cache into repository.
+  // ----------------------------------
+  for (
+    const entry of
+    Object.values(
+      processedEmailCache
+    )
+  ) {
+    if (entry?.case) {
+      caseRepository.save(
+        entry.case
+      );
+    }
+  }
+
+  console.log(
+    `[Pipeline Cache] Loaded ${
+      Object.keys(
+        processedEmailCache
+      ).length
+    } total cached emails`
+  );
 
   // ----------------------------------
   // One-time recovery of cases from
@@ -517,18 +614,18 @@ Classify ONE shipping operations email into exactly one category:
 BL_COMPARISON, SI_REQUEST, INVOICE_QUERY, GENERAL, or SPAM.
 
 Definitions:
-- BL_COMPARISON: asks to check, compare, verify, validate, review, or confirm a draft Bill of Lading against a Shipping Instruction.
-- SI_REQUEST: concerns submitting, requesting, creating, updating, or processing a Shipping Instruction, but not comparing SI against a draft BL.
-- INVOICE_QUERY: primarily concerns invoices, billing, payment, charges, fees, or financial documentation.
-- GENERAL: legitimate shipping/operational email that does not fit the categories above.
-- SPAM: irrelevant, unsolicited, promotional, or non-operational content.
+\- BL_COMPARISON: asks to check, compare, verify, validate, review, or confirm a draft Bill of Lading against a Shipping Instruction.
+\- SI_REQUEST: concerns submitting, requesting, creating, updating, or processing a Shipping Instruction, but not comparing SI against a draft BL.
+\- INVOICE_QUERY: primarily concerns invoices, billing, payment, charges, fees, or financial documentation.
+\- GENERAL: legitimate shipping/operational email that does not fit the categories above.
+\- SPAM: irrelevant, unsolicited, promotional, or non-operational content.
 
 Rules:
-- Consider subject, body, and attachment names together.
-- Do not classify from keywords alone.
-- A misleading subject must not override actual intent.
-- Return exactly one category.
-- Do not invent information.
+\- Consider subject, body, and attachment names together.
+\- Do not classify from keywords alone.
+\- A misleading subject must not override actual intent.
+\- Return exactly one category.
+\- Do not invent information.
 
 Email ID: ${email.email_id}
 From: ${email.from || email.sender || ""}
@@ -671,8 +768,6 @@ app.post("/api/ds1/read-document", async (req, res) => {
         content =
           result.text?.trim() || "";
 
-        // A valid PDF with no extractable text
-        // may be a scanned/image PDF.
         if (!content) {
           console.warn(
             `[Document Reader] PDF contains no extractable text: ${attachmentPath}`
@@ -683,9 +778,6 @@ app.post("/api/ds1/read-document", async (req, res) => {
           `[Document Reader] Unreadable PDF: ${attachmentPath} - ${error.message}`
         );
 
-        // IMPORTANT:
-        // Do not return HTTP 500.
-        // Let the pipeline route this to Human Review.
         content = "";
 
         try {
@@ -710,7 +802,6 @@ app.post("/api/ds1/read-document", async (req, res) => {
       content = result.value;
       fileType = "docx";
     } else if ([".png", ".jpg", ".jpeg", ".webp"].includes(extension)) {
-      // Image files are intentionally sent to the Vision OCR endpoint.
       content = "";
     } else {
       return res.status(400).json({ error: `Unsupported file type: ${extension}` });
@@ -753,7 +844,6 @@ function identifyDocumentsFallback(
     let evidence =
       "No strong deterministic document marker found.";
 
-    // Strong SI indicators
     if (
       content.includes("shipping instruction") ||
       filename.includes("_si.") ||
@@ -765,7 +855,6 @@ function identifyDocumentsFallback(
         "Identified by explicit Shipping Instruction marker in filename/content.";
     }
 
-    // Strong BL indicators
     else if (
       content.includes("bill of lading") ||
       filename.includes("_bl.") ||
@@ -781,14 +870,10 @@ function identifyDocumentsFallback(
     return {
       path: attachmentPath,
       documentType,
-
-      // Conservative fallback score.
-      // This is not treated as calibrated probability.
       confidence:
         documentType === "UNKNOWN"
           ? 0
           : 0.6,
-
       evidence:
         `[Deterministic fallback] ${evidence}`
     };
@@ -886,37 +971,35 @@ Return ONLY valid JSON as an array:
 
     return res.json(parsed);
   } catch (error: any) {
-      console.error(
-        "Document identification error:",
-        error
+    console.error(
+      "Document identification error:",
+      error
+    );
+
+    if (
+      error?.status === 503 ||
+      error?.status === 429
+    ) {
+      console.warn(
+        "Gemini identification unavailable. " +
+        "Using deterministic fallback."
       );
 
-      // Gemini temporarily unavailable:
-      // fall back to deterministic evidence.
-      if (
-        error?.status === 503 ||
-        error?.status === 429
-      ) {
-        console.warn(
-          "Gemini identification unavailable. " +
-          "Using deterministic fallback."
+      const fallback =
+        identifyDocumentsFallback(
+          attachments,
+          attachmentContents
         );
 
-        const fallback =
-          identifyDocumentsFallback(
-            attachments,
-            attachmentContents
-          );
-
-        return res.json(fallback);
-      }
-
-      return res.status(500).json({
-        success: false,
-        error:
-          "Document identification failed"
-      });
+      return res.json(fallback);
     }
+
+    return res.status(500).json({
+      success: false,
+      error:
+        "Document identification failed"
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -938,23 +1021,23 @@ app.post("/api/ds1/extract-fields", async (req, res) => {
 You are the Document Field Extraction Agent for ShipSure AI.
 
 Extract exactly these 7 fields:
-1. shipper
-2. consignee
-3. notify_party
-4. port_of_loading
-5. port_of_discharge
-6. container_count
-7. gross_weight_kg
+1\. shipper
+2\. consignee
+3\. notify_party
+4\. port_of_loading
+5\. port_of_discharge
+6\. container_count
+7\. gross_weight_kg
 
 Rules:
-- Extract values VERBATIM exactly as they appear.
-- Preserve spaces, punctuation, capitalization, symbols, and units.
-- Do NOT normalize values.
-- Do NOT convert units.
-- Do NOT infer or guess missing values.
-- If a field cannot be found, set raw to null.
-- snippet must contain supporting document text.
-- confidence must be between 0 and 1.
+\- Extract values VERBATIM exactly as they appear.
+\- Preserve spaces, punctuation, capitalization, symbols, and units.
+\- Do NOT normalize values.
+\- Do NOT convert units.
+\- Do NOT infer or guess missing values.
+\- If a field cannot be found, set raw to null.
+\- snippet must contain supporting document text.
+\- confidence must be between 0 and 1.
 
 Document type: ${documentType}
 Document:
@@ -1084,18 +1167,6 @@ app.post("/api/ds2/compare", async (req, res) => {
   }
 });
 
-// Gemini Multi-Agent & Copilot API endpoint
-app.post("/api/copilot/chat", async (req, res) => {
-  const { prompt, context, agentId, mode } = req.body;
-  const ai = getGeminiClient();
-
-  if (!ai) {
-    return res.json({
-      fallback: true,
-      message: "Server-side GEMINI_API_KEY not configured. Using deterministic multi-agent orchestration engine.",
-    });
-  }
-});
 
 app.get("/api/dataset/emails/:emailId", async (req, res) => {
   try {
@@ -1194,9 +1265,6 @@ app.post(
         manualOverride,
       } = req.body || {};
 
-      // ---------------------------------------------------------------------
-      // Validate reviewer
-      // ---------------------------------------------------------------------
       if (
         typeof reviewer !== "string" ||
         !reviewer.trim()
@@ -1206,9 +1274,6 @@ app.post(
         });
       }
 
-      // ---------------------------------------------------------------------
-      // Validate decision
-      // ---------------------------------------------------------------------
       if (
         approvedStatus !== "OK" &&
         approvedStatus !== "MISMATCH"
@@ -1219,9 +1284,6 @@ app.post(
         });
       }
 
-      // ---------------------------------------------------------------------
-      // Find case
-      // ---------------------------------------------------------------------
       const shipmentCase =
         caseRepository.getById(caseId);
 
@@ -1234,9 +1296,6 @@ app.post(
       const timestamp =
         new Date().toISOString();
 
-      // ---------------------------------------------------------------------
-      // Optional manual override
-      // ---------------------------------------------------------------------
       let manualOverrides:
         | Partial<Record<string, any>>
         | undefined;
@@ -1248,7 +1307,6 @@ app.post(
           value,
         } = manualOverride;
 
-        // Validate field
         if (
           typeof field !== "string" ||
           !shipmentCase.fieldComparisons.some(
@@ -1261,7 +1319,6 @@ app.post(
           });
         }
 
-        // Validate document type
         if (
           documentType !== "SI" &&
           documentType !== "BL"
@@ -1272,7 +1329,6 @@ app.post(
           });
         }
 
-        // Validate value
         if (
           typeof value !== "string" ||
           !value.trim()
@@ -1298,10 +1354,6 @@ app.post(
         const correctedValue =
           value.trim();
 
-        // ---------------------------------------------------------------
-        // Preserve the existing evidence structure.
-        // If evidence already exists, update its value.
-        // ---------------------------------------------------------------
         const existingEvidence =
           documentType === "SI"
             ? comparison.siEvidence
@@ -1326,9 +1378,6 @@ app.post(
               updatedEvidence;
           }
         } else {
-          // -------------------------------------------------------------
-          // If no evidence existed, create a valid FieldEvidence object.
-          // -------------------------------------------------------------
           const newEvidence = {
             documentType,
             originalValue:
@@ -1348,28 +1397,19 @@ app.post(
           }
         }
 
-        // Store the override in the case's human-review decision.
         manualOverrides = {
           [field as ComparisonField]:
             correctedValue,
         };
       }
 
-      // ---------------------------------------------------------------------
-      // Persist final human decision
-      // ---------------------------------------------------------------------
       shipmentCase.verificationStatus =
         approvedStatus;
 
-      // Human decision must survive maintenance/reverification.
       shipmentCase.humanReviewed = true;
 
-      // Case is no longer waiting for human review.
       shipmentCase.reviewReason = null;
 
-      // ---------------------------------------------------------------------
-      // Resolve revision review if this case came from a revision.
-      // ---------------------------------------------------------------------
       if (
         shipmentCase.revisionComparison
       ) {
@@ -1378,9 +1418,6 @@ app.post(
           "RESOLVED";
       }
 
-      // ---------------------------------------------------------------------
-      // Store human review decision using the existing ShipmentCase type.
-      // ---------------------------------------------------------------------
       shipmentCase.humanReviewDecision = {
         reviewer:
           reviewer.trim(),
@@ -1398,9 +1435,6 @@ app.post(
             : undefined,
       };
 
-      // ---------------------------------------------------------------------
-      // Add timeline event
-      // ---------------------------------------------------------------------
       shipmentCase.timeline.push({
         id:
           `human-review-${Date.now()}`,
@@ -1441,16 +1475,10 @@ app.post(
         },
       });
 
-      // ---------------------------------------------------------------------
-      // Save updated case
-      // ---------------------------------------------------------------------
       caseRepository.save(
         shipmentCase
       );
 
-      // ---------------------------------------------------------------------
-      // Update persistent processed-email cache
-      // ---------------------------------------------------------------------
       for (
         const entry of Object.values(
           processedEmailCache
@@ -1469,9 +1497,6 @@ app.post(
 
       await saveProcessedEmailCache();
 
-      // ---------------------------------------------------------------------
-      // Append audit event
-      // ---------------------------------------------------------------------
       await auditRepository.append([
         {
           caseId:
@@ -1511,9 +1536,6 @@ app.post(
         },
       ] as any);
 
-      // ---------------------------------------------------------------------
-      // Return updated case to frontend
-      // ---------------------------------------------------------------------
       return res.json({
         success: true,
 
@@ -1764,10 +1786,6 @@ async function processNewEmails():
       fingerprint: string;
     }[] = [];
 
-    // ----------------------------------
-    // Decide which emails actually need
-    // Gemini.
-    // ----------------------------------
     for (
       const email of emails
     ) {
@@ -1781,16 +1799,11 @@ async function processNewEmails():
           email.email_id
         ];
 
-      // ----------------------------------
-      // Already permanently cached
-      // ----------------------------------
       if (
         cached &&
         cached.fingerprint ===
           fingerprint
       ) {
-        // Only old pipeline-v1 missing-value
-        // cases need one-time reprocessing.
         const needsReprocessing =
           cached.processingVersion ===
             "pipeline-v1" &&
@@ -1812,11 +1825,6 @@ async function processNewEmails():
         }
       }
 
-      // --------------------------------
-      // One-time migration:
-      // case existed before persistent
-      // caching was introduced.
-      // --------------------------------
       const existingCase =
         caseRepository
           .getAll()
@@ -1850,60 +1858,47 @@ async function processNewEmails():
         continue;
       }
 
-      // New or changed email
       queue.push({
         email,
         fingerprint,
       });
-      }
+    }
 
-      // Save any cache migration changes.
-      if (
-        pipelineRunState.skipped >
-        0
-      ) {
-        await saveProcessedEmailCache();
-      }
+    if (
+      pipelineRunState.skipped >
+      0
+    ) {
+      await saveProcessedEmailCache();
+    }
 
-      // --------------------------------------------------
-      // No new/changed emails:
-      // watcher keeps running, but terminal stays silent.
-      // --------------------------------------------------
-      if (queue.length === 0) {
-        return;
-      }
+    if (queue.length === 0) {
+      return;
+    }
 
-      // --------------------------------------------------
-      // Only show logs when actual work exists.
-      // --------------------------------------------------
-      console.log(
-        `[Pipeline] Detected ${queue.length} new/changed email(s)`
+    console.log(
+      `[Pipeline] Detected ${queue.length} new/changed email(s)`
+    );
+
+    console.log(
+      `[Pipeline] Inbox total: ${emails.length}`
+    );
+
+    console.log(
+      `[Pipeline] Already processed: ${pipelineRunState.skipped}`
+    );
+
+    const MAX_AUTO_PROCESS = 3;
+
+    const processingQueue =
+      queue.slice(
+        0,
+        MAX_AUTO_PROCESS
       );
 
-      console.log(
-        `[Pipeline] Inbox total: ${emails.length}`
-      );
+    console.log(
+      `[Pipeline] Processing this run: ${processingQueue.length}`
+    );
 
-      console.log(
-        `[Pipeline] Already processed: ${pipelineRunState.skipped}`
-      );
-
-      const MAX_AUTO_PROCESS = 3;
-
-      const processingQueue =
-        queue.slice(
-          0,
-          MAX_AUTO_PROCESS
-        );
-
-      console.log(
-        `[Pipeline] Processing this run: ${processingQueue.length}`
-      );
-
-    // ----------------------------------
-    // Only new/changed emails enter
-    // Gemini / DS1 / DS2.
-    // ----------------------------------
     for (
       let index = 0;
       index < processingQueue.length;
@@ -1932,8 +1927,6 @@ async function processNewEmails():
           shipmentCase
         );
 
-        // Only mark as processed after
-        // successful completion.
         processedEmailCache[
           email.email_id
         ] = {
@@ -1984,9 +1977,6 @@ async function processNewEmails():
           `[Pipeline] Failed ${email.email_id}: ${message}`
         );
 
-        // IMPORTANT:
-        // Don't burn more requests while
-        // the quota window is exhausted.
         if (
           message.includes(
             "429"
@@ -2164,18 +2154,14 @@ app.get("/api/orchestration/events", async (req, res) => {
 });
 
 app.post("/api/revision/compare", (req, res) => {
-    try {
-      if (
-        !REVISION_INTELLIGENCE_ENABLED
-      ) {
-        return res
-          .status(409)
-          .json({
-            error:
-              "Version Intelligence is an experimental future-work feature and is currently disabled.",
-          });
-      }
-      
+  try {
+    if (!REVISION_INTELLIGENCE_ENABLED) {
+      return res.status(409).json({
+        error:
+          "Version Intelligence is an experimental future-work feature and is currently disabled.",
+      });
+    }
+
     const { caseId, si, blV1, blV2 } = req.body || {};
     if (!caseId || !si || !blV1 || !blV2) {
       return res.status(400).json({
@@ -2208,10 +2194,6 @@ app.post(
         NEEDS_REVIEW: 0,
       };
 
-      // ------------------------------------------
-      // Count current BL_COMPARISON status
-      // ------------------------------------------
-
       for (
         const entry of
         Object.values(
@@ -2239,12 +2221,6 @@ app.post(
         }
       }
 
-      // ------------------------------------------
-      // Reverify using STORED SI/BL data only
-      //
-      // ZERO GEMINI CALLS
-      // ------------------------------------------
-
       for (
         const entry of
         Object.values(
@@ -2262,7 +2238,6 @@ app.post(
           continue;
         }
 
-        // Preserve explicit human decisions.
         if (
           caseObj.humanReviewed
         ) {
@@ -2270,7 +2245,6 @@ app.post(
           continue;
         }
 
-        // Don't overwrite Phase 4 revision state.
         if (
           caseObj.hasRevision
         ) {
@@ -2278,8 +2252,6 @@ app.post(
           continue;
         }
 
-        // Cases without usable SI/BL should remain
-        // genuine NEEDS_REVIEW cases.
         if (
           !caseObj.siData ||
           !caseObj.blData
@@ -2369,15 +2341,7 @@ app.post(
         }
       }
 
-      // ------------------------------------------
-      // Persist corrected cache
-      // ------------------------------------------
-
       await saveProcessedEmailCache();
-
-      // ------------------------------------------
-      // Count corrected results
-      // ------------------------------------------
 
       for (
         const entry of
@@ -2543,12 +2507,12 @@ shipper, consignee, notify_party, port_of_loading, port_of_discharge,
 container_count, gross_weight_kg.
 
 Rules:
-- Preserve raw values as written.
-- Do not normalize values or convert units.
-- Do not guess unreadable or missing characters.
-- For each field return raw, confidence, and supporting snippet.
-- If a field cannot be reliably read, return raw as null and confidence as 0.
-- Record unclear fields in unreadableFields.
+\- Preserve raw values as written.
+\- Do not normalize values or convert units.
+\- Do not guess unreadable or missing characters.
+\- For each field return raw, confidence, and supporting snippet.
+\- If a field cannot be reliably read, return raw as null and confidence as 0.
+\- Record unclear fields in unreadableFields.
 
 Return ONLY valid JSON.`;
 
@@ -2613,7 +2577,7 @@ app.post("/api/evaluation/submit", async (req, res) => {
 
 async function startServer() {
   await loadProcessedState();
-  
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -2650,7 +2614,6 @@ async function startServer() {
           `[Pipeline] New-email watcher enabled (${intervalMs} ms)`
         );
 
-        // First check after server is ready
         setTimeout(
           () => {
             void processNewEmails();
@@ -2658,7 +2621,6 @@ async function startServer() {
           1500
         );
 
-        // Continue checking inbox
         setInterval(
           () => {
             if (
