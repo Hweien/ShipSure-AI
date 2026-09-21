@@ -7,25 +7,66 @@ import type {
   ShipmentCase,
 } from "../../src/types";
 
-import { verifyDocuments } from "../../src/services/verificationEngine";
+import {
+  verifyDocuments,
+  normalizeDocumentFields,
+} from "../../src/services/verificationEngine";
+import { caseRepository } from "./caseRepository";
+import { compareRevision } from "./revisionEngine";
 
 type PostJson = <T>(
   path: string,
   body: unknown
 ) => Promise<T>;
 
+function extractShipmentReference(
+  email: EmailRecord
+): string | null {
+  const text = `${email.subject || ""}\n${email.body || ""}`;
+
+  const match = text.match(
+    /\b5[A-Z]{3}-\d{5}\b/i
+  );
+
+  return match
+    ? match[0].toUpperCase()
+    : null;
+}
+
 export async function processEmailPipeline(
   email: EmailRecord,
   postJson: PostJson
 ): Promise<ShipmentCase> {
     const now = new Date().toISOString();
+
+    const shipmentReference =
+      extractShipmentReference(email);
+
+    const existingCase =
+      shipmentReference
+        ? caseRepository.getByShipmentReference(
+            shipmentReference
+          )
+        : undefined;
+
+    console.log(
+      `[Pipeline ${email.email_id}] Shipment reference:`,
+      shipmentReference
+    );
+
+    if (existingCase) {
+      console.log(
+        `[Pipeline ${email.email_id}] Existing shipment found:`,
+        existingCase.id
+      );
+    }
     
     console.log(
     `[Pipeline ${email.email_id}] 1. Classifying email`
     );
 
   // ---------------------------------------------------------
-  // 1. DS1 — classify email
+  // 1. DS1: classify email
   // ---------------------------------------------------------
   const classification =
     await postJson<EmailClassificationResult>(
@@ -37,9 +78,9 @@ export async function processEmailPipeline(
     id: `CASE-${email.email_id}`,
     emailId: email.email_id,
 
-    // Until a real shipment / booking reference extractor is added,
-    // retain the email ID rather than inventing a reference.
-    shipmentReference: email.email_id,
+    // Use the shipment/order reference extracted from the email.
+    // Fall back to email ID when no reference is available.
+    shipmentReference: shipmentReference ?? email.email_id,
 
     emailSubject: email.subject,
 
@@ -130,7 +171,7 @@ export async function processEmailPipeline(
     `[Pipeline ${email.email_id}] 2. Reading attachments`
     );
   // ---------------------------------------------------------
-  // 4. DS1 — read attachments
+  // 4. DS1: read attachments
   // ---------------------------------------------------------
   const attachmentContents =
     await Promise.all(
@@ -212,7 +253,7 @@ export async function processEmailPipeline(
     `[Pipeline ${email.email_id}] 3. Identifying SI/BL`
     );
   // ---------------------------------------------------------
-  // 5. DS1 — identify SI and BL
+  // 5. DS1: identify SI and BL
   // ---------------------------------------------------------
   const identifiedDocuments =
     await postJson<DocumentIdentificationResult[]>(
@@ -235,10 +276,8 @@ export async function processEmailPipeline(
         document.documentType === "BL"
     );
 
-  if (
-    !siIdentification ||
-    !blIdentification
-  ) {
+  // A BL is required for both normal comparison and revision comparison.
+  if (!blIdentification) {
     return {
       ...baseCase,
 
@@ -247,7 +286,7 @@ export async function processEmailPipeline(
 
       priorityScore: 90,
       priorityReasons: [
-        "Unable to identify both SI and BL documents",
+        "Unable to identify a BL document",
       ],
 
       timeline: [
@@ -257,19 +296,12 @@ export async function processEmailPipeline(
           timestamp: new Date().toISOString(),
           agent: "Document Agent",
           action: "Document Identification",
-          summary:
-            "Could not reliably identify both SI and BL",
+          summary: "Could not reliably identify a BL document",
           status: "warning",
         },
       ],
     };
   }
-
-  const siRead =
-    attachmentContents.find(
-      (item) =>
-        item.path === siIdentification.path
-    );
 
   const blRead =
     attachmentContents.find(
@@ -277,10 +309,15 @@ export async function processEmailPipeline(
         item.path === blIdentification.path
     );
 
-  if (
-    !siRead?.content ||
-    !blRead?.content
-  ) {
+  const siRead =
+    siIdentification 
+    ? attachmentContents.find(
+      (item) =>
+        item.path === siIdentification.path
+    )
+    : undefined;
+
+  if (!blRead?.content) {
     return {
       ...baseCase,
 
@@ -289,7 +326,7 @@ export async function processEmailPipeline(
 
       priorityScore: 95,
       priorityReasons: [
-        "SI or BL content could not be read",
+        "BL content could not be read",
       ],
 
       timeline: [
@@ -300,18 +337,153 @@ export async function processEmailPipeline(
           agent: "Document Agent",
           action: "Document Reading",
           summary:
-            "SI or BL content could not be reliably read",
+            "BL content could not be reliably read",
+          status: "warning",
+        },
+      ],
+    };
+  } 
+  // Detect possible BL revision
+  const isRevisionCandidate =
+  !!existingCase &&
+  existingCase.emailId !== email.email_id &&
+  !!existingCase.siData &&
+  !!existingCase.blData &&
+  !!blIdentification;
+
+  // ---------------------------------------------------------
+  // REVISION PATH
+  // Existing shipment + previous SI/BL + incoming BL
+  // ---------------------------------------------------------
+  if (isRevisionCandidate &&
+    existingCase &&
+    existingCase.siData &&
+    existingCase.blData
+  ) {
+    console.log(
+      `[Pipeline ${email.email_id}] Existing shipment detected — processing BL revision`
+    );
+
+    const blV2 =
+      await postJson<ExtractedDocumentFields>(
+        "/api/ds1/extract-fields",
+        {
+          text: blRead.content,
+          documentType: "BL",
+        }
+      );
+
+    // Normalize BL V2 before revision comparison
+    normalizeDocumentFields(blV2);
+
+    const revisionComparison =
+      compareRevision(
+        existingCase.id,
+        existingCase.siData,
+        existingCase.blData,
+        blV2
+      );
+      
+    const revisionResolved =
+      revisionComparison.overallOutcome === "RESOLVED";
+
+    const revisionDefectFields = [
+      ...revisionComparison.correctedFields
+        .filter((item) => item.status === "STILL_MISMATCH")
+        .map((item) => item.field),
+
+      ...revisionComparison.unexpectedChanges
+        .map((item) => item.field),
+    ];
+
+    const updatedCase: ShipmentCase = {
+      ...existingCase,
+
+      // BL V2 is now the current state of this shipment
+      verificationStatus: revisionResolved
+        ? "OK"
+        : "NEEDS_REVIEW",
+
+      hasDefect: revisionDefectFields.length > 0,
+
+      defectFields: revisionDefectFields,
+
+      reviewReason: null,
+
+      priorityScore: revisionResolved ? 20 : 90,
+
+      priorityReasons: revisionResolved
+        ? ["BL V2 resolves the discrepancies identified in BL V1."]
+        : ["BL V2 contains unresolved or unexpected changes requiring human review."],
+
+      hasRevision: true,
+      blVersion: 2,
+      revisionComparison,
+
+      timeline: [
+        ...existingCase.timeline,
+        {
+          id: `EV-${email.email_id}-REVISION`,
+          timestamp: new Date().toISOString(),
+          agent: "Revision Agent",
+          action: "BL Revision Comparison",
+          summary: revisionResolved
+            ? "BL V2 resolves the previous discrepancies"
+            : "BL V2 requires human review",
+          status: revisionResolved
+            ? "success"
+            : "warning",
+          details: {
+            revisionEmailId: email.email_id,
+            revisionEmailSubject: email.subject,
+          },
+        },
+      ],
+    };
+
+    console.log(
+      `[Pipeline ${email.email_id}] Revision comparison complete`
+    );
+
+    return updatedCase;
+  }
+
+  // ---------------------------------------------------------
+  // NORMAL PATH requires SI + BL
+  // ---------------------------------------------------------
+  if (!siIdentification || !siRead?.content) {
+    return {
+      ...baseCase,
+
+      verificationStatus: "NEEDS_REVIEW",
+      reviewReason: "wrong_doc_type",
+
+      priorityScore: 90,
+      priorityReasons: [
+        "Unable to identify or read the SI document",
+      ],
+
+      timeline: [
+        ...baseCase.timeline,
+        {
+          id: `EV-${email.email_id}-SI-MISSING`,
+          timestamp: new Date().toISOString(),
+          agent: "Document Agent",
+          action: "Document Identification",
+          summary:
+            "SI document is required for initial BL comparison",
           status: "warning",
         },
       ],
     };
   }
 
-    console.log(
-    `[Pipeline ${email.email_id}] 4. Extracting SI`
-    );
+  console.log(
+  `[Pipeline ${email.email_id}] 4. Extracting SI`
+  );
+
   // ---------------------------------------------------------
-  // 6. DS1 — extract 7 fields
+  // 6. DS1: extract 7 fields
   // ---------------------------------------------------------
   const siData =
     await postJson<ExtractedDocumentFields>(
@@ -338,7 +510,7 @@ export async function processEmailPipeline(
     `[Pipeline ${email.email_id}] 6. Running verification`
     );
   // ---------------------------------------------------------
-  // 7. DS2 — normalize + deterministic verification
+  // 7. DS2: normalize + deterministic verification
   // ---------------------------------------------------------
   const verification = verifyDocuments(
     siData,

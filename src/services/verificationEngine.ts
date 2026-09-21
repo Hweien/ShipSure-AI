@@ -39,6 +39,42 @@ const FIELD_LABELS: Record<ComparisonField, string> = {
   gross_weight_kg: "Gross Weight (KG)"
 };
 
+export function normalizeFieldValue(
+  field: ComparisonField,
+  raw: string | number
+): string | number {
+  switch (field) {
+    case "shipper":
+    case "consignee":
+    case "notify_party":
+      return normalizeEntityName(String(raw)).normalized;
+
+    case "port_of_loading":
+    case "port_of_discharge":
+      return normalizePort(String(raw)).normalized;
+
+    case "container_count":
+      return normalizeContainerCount(raw).normalized;
+
+    case "gross_weight_kg":
+      return normalizeGrossWeight(raw).normalized;
+  }
+}
+
+export function normalizeDocumentFields(
+  document: ExtractedDocumentFields
+): ExtractedDocumentFields {
+  for (const field of COMPARISON_FIELDS) {
+    const item = document.fields[field];
+
+    if (item?.raw != null) {
+      item.normalized = normalizeFieldValue(field, item.raw);
+    }
+  }
+
+  return document;
+}
+
 /**
  * Compares two extracted documents (SI as reference, BL as candidate)
  */
@@ -84,6 +120,9 @@ export function verifyDocuments(
       explanation: "Attachment format does not correspond to expected Shipping Instruction or Bill of Lading."
     };
   }
+
+  normalizeDocumentFields(si);
+  normalizeDocumentFields(bl);
 
   const fieldComparisons: SingleFieldComparison[] = [];
   const defectFields: ComparisonField[] = [];

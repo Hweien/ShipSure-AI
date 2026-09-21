@@ -2050,25 +2050,34 @@ async function processNewEmails():
     );
 
 
+    const MAX_AUTO_PROCESS = 5;
+
+    const processingQueue =
+      queue.slice(0, MAX_AUTO_PROCESS);
+
+    console.log(
+      `[Pipeline] Processing this run: ${processingQueue.length}`
+    );
+
     // ----------------------------------
     // Only new/changed emails enter
     // Gemini / DS1 / DS2.
     // ----------------------------------
     for (
       let index = 0;
-      index < queue.length;
+      index < processingQueue.length;
       index++
     ) {
       const {
         email,
         fingerprint,
-      } = queue[index];
+      } = processingQueue[index];
 
       pipelineRunState.currentEmailId =
         email.email_id;
 
       console.log(
-        `[Pipeline] New email ${index + 1}/${queue.length}: ${email.email_id}`
+        `[Pipeline] New email ${index + 1}/${processingQueue.length}: ${email.email_id}`
       );
 
       try {
