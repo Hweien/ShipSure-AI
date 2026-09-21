@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import shipsureLogo from "../assets/shipsure-logo.svg";
+import shipsureLogo from "../../shipsure-logo.svg";
 import {
   Search,
   Calendar,
